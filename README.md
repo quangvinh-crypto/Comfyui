@@ -77,7 +77,11 @@ Toàn bộ thư viện bên thứ ba (`venv/`, `node_modules/`), dữ liệu ng�
 | **Mức 2 — Khuyến nghị** | CPU i5/Ryzen 5+, RAM `16–32 GB`, NVIDIA RTX `8–12 GB VRAM` (VD: RTX 3060/4060), trống `50–100 GB` SSD | Chạy tốt các model tạo ảnh AI offline trên ComfyUI Worker (`SD 1.5`, `SDXL`, `Flux` lượng tử hóa) |
 | **Mức 3 — Chuyên sâu** | CPU 8 nhân+, RAM `32–64 GB`, NVIDIA RTX `16–24 GB VRAM` (RTX 3090/4080/4090), trống `150+ GB` SSD | Render trực tiếp các model Video AI / 3D AI dung lượng lớn ngay trên máy cục bộ |
 
-> **Lưu ý với GPU VRAM thấp (`<= 6 GB`, ví dụ GTX 1650 4 GB):** Launcher `studio` tự động phát hiện GPU và truyền cờ `--lowvram --fp32-vae --force-upcast-attention` cho ComfyUI Worker.
+> **Lưu ý cấu hình GPU & VRAM:**
+> - Chạy `.\studio doctor` để kiểm tra `torch.cuda.is_available()`, phiên bản PyTorch CUDA và phân loại model trong `models/checkpoints`.
+> - Nếu `venv` đang cài nhầm `torch+cpu`, `.\studio` sẽ cảnh báo và tự lùi về `--cpu` để ComfyUI Worker vẫn khởi động được thay vì crash; cài lại bản CUDA (`--index-url https://download.pytorch.org/whl/cu126`) để chạy bằng GPU.
+> - Launcher tự gắn `--lowvram --fp32-vae --force-upcast-attention` cho GPU `<= 6 GB VRAM`, và `--normalvram` cho GPU `8–12 GB VRAM`.
+> - Máy `12 GB VRAM` nên dùng checkpoint All-in-One **Flux.1 Schnell FP8** (`flux1-schnell-fp8.safetensors`) hoặc **SDXL / Animagine XL 3.1** thay cho SD 1.5 (`77 token`) để bám sát prompt dài và bố cục đa nhân vật.
 
 ---
 
@@ -94,14 +98,18 @@ cd Comfyui
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# Cài PyTorch (chọn bản CUDA phù hợp GPU NVIDIA hoặc bản CPU từ pytorch.org)
-pip install torch torchvision torchaudio
+# Cài PyTorch bản hỗ trợ GPU NVIDIA CUDA (hoặc chọn phiên bản CUDA phù hợp tại pytorch.org)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # Cài các thư viện phụ thuộc của dự án
 pip install -r requirements.txt
+
+# Kiểm tra cấu hình GPU, PyTorch CUDA & model checkpoint
+.\studio doctor
 ```
 
-*(Tùy chọn)* Đặt các file model checkpoint `.safetensors` vào thư mục `models/checkpoints/` nếu muốn render ảnh trực tiếp bằng **ComfyUI Local GPU Worker**.
+*(Tùy chọn)* Đặt các file model checkpoint `.safetensors` (ví dụ `flux1-schnell-fp8.safetensors` hoặc model SDXL/Animagine XL cho máy `12 GB VRAM`) vào thư mục `models/checkpoints/` nếu muốn render ảnh trực tiếp bằng **`Local GPU (VRAM)`**.
+Nếu chọn **`Antigravity AI Bridge`**, Studio ghi job vào `user/studio/bridge_queue/<run_id>.json` cho Agent xử lý và hỗ trợ nút **Stop (■)** ngay trên thẻ để hủy nhanh khi không có Agent trực.
 
 ### 2. Chạy toàn bộ dự án bằng 1 lệnh (Windows)
 

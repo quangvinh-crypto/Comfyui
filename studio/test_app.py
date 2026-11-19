@@ -1289,10 +1289,17 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.submitted = []
         self.uploaded = []
         self.view_image_bytes = self.image
+        self.mock_checkpoints = ["test.safetensors"]
+        self.mock_system_stats = None
         worker = web.Application()
 
         async def object_info(request):
-            return web.json_response({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["test.safetensors"]]}}}})
+            return web.json_response({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [list(self.mock_checkpoints)]}}}})
+
+        async def system_stats(request):
+            if self.mock_system_stats is None:
+                return web.Response(status=404, text="Not found")
+            return web.json_response(self.mock_system_stats)
 
         async def submit(request):
             payload = await request.json()
@@ -1321,6 +1328,7 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
             return web.Response(body=self.view_image_bytes, content_type="image/png")
 
         worker.router.add_get("/object_info/CheckpointLoaderSimple", object_info)
+        worker.router.add_get("/system_stats", system_stats)
         worker.router.add_post("/prompt", submit)
         worker.router.add_post("/upload/image", upload_image)
         worker.router.add_get("/history/{prompt_id}", history)
@@ -1648,6 +1656,211 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
         valid_bad, err_bad = validate_py_sources([bad_file])
         self.assertFalse(valid_bad)
         self.assertIn("broken_indent.py", err_bad)
+
+    async def test_12gb_vram_checkpoint_selection_flux_sdxl_and_sd15_prompts(self):
+        from studio.runner import normalize_clip_prompt, select_best_checkpoint
+
+        self.assertEqual(
+            normalize_clip_prompt("lazypos\nA humorous modern anime-style parody"),
+            "A humorous modern anime-style parody",
+        )
+        self.assertEqual(normalize_clip_prompt("embedding:lazypos, anime girl"), "embedding:lazypos, anime girl")
+
+        self.mock_system_stats = {
+            "devices": [
+                {
+                    "name": "cuda:0 NVIDIA GeForce RTX 3060",
+                    "type": "cuda",
+                    "vram_total": 12288 * 1024 * 1024,
+                    "vram_free": 11000 * 1024 * 1024,
+                }
+            ]
+        }
+        # First check warning when only SD1.5 exists on 12GB VRAM
+        self.mock_checkpoints = ["DreamShaper_8_pruned.safetensors"]
+        status_sd15 = await (await self.client.get("/studio/api/comfy/status")).json()
+        self.assertTrue(status_sd15["connected"])
+        self.assertEqual(status_sd15["vramTier"], "12gb+")
+        self.assertTrue(status_sd15["warnings"])
+        self.assertIn("DreamShaper_8_pruned.safetensors", status_sd15["warnings"][0])
+
+        # Add SDXL & Flux Schnell -> 12GB VRAM should prefer flux1-schnell-fp8.safetensors
+        self.mock_checkpoints = [
+            "DreamShaper_8_pruned.safetensors",
+            "animagine-xl-3.1.safetensors",
+            "flux1-schnell-fp8.safetensors",
+        ]
+        self.assertEqual(select_best_checkpoint(self.mock_checkpoints, 12288), "flux1-schnell-fp8.safetensors")
+        self.assertEqual(select_best_checkpoint(self.mock_checkpoints, 8192), "animagine-xl-3.1.safetensors")
+
+        project = await (await self.client.post("/studio/api/projects", json={"title": "12GB VRAM Routing"})).json()
+        graph = {
+            "nodes": [
+                {
+                    "id": "node_auto_12gb",
+                    "kind": "text-image",
+                    "x": 100,
+                    "y": 100,
+                    "model": "Local GPU (VRAM)",
+                    "prompt": "lazypos\nA humorous modern anime-style parody sharing snacks",
+                    "width": 1376,
+                    "height": 768,
+                    "steps": 20,
+                    "cfg": 7.0,
+                },
+                {
+                    "id": "node_sdxl",
+                    "kind": "text-image",
+                    "x": 500,
+                    "y": 100,
+                    "model": "animagine-xl-3.1.safetensors",
+                    "prompt": "two anime girls sharing snacks",
+                    "width": 1376,
+                    "height": 768,
+                    "steps": 20,
+                    "cfg": 7.0,
+                },
+                {
+                    "id": "node_sd15",
+                    "kind": "text-image",
+                    "x": 900,
+                    "y": 100,
+                    "model": "DreamShaper_8_pruned.safetensors",
+                    "prompt": "girl on carpet",
+                    "width": 1376,
+                    "height": 768,
+                    "steps": 20,
+                    "cfg": 7.0,
+                },
+            ],
+            "edges": [],
+        }
+        put_res = await self.client.put(f"/studio/api/projects/{project['id']}/graph", json={"version": 1, "graph": graph})
+        self.assertEqual(put_res.status, 200)
+
+        r_flux = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "node_auto_12gb", "version": 2})).json()
+        r_sdxl = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "node_sdxl", "version": 2})).json()
+        r_sd15 = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "node_sd15", "version": 2})).json()
+
+        self.assertEqual(r_flux["snapshot"]["model"], "flux1-schnell-fp8.safetensors")
+        self.assertEqual(r_flux["snapshot"]["checkpointFamily"], "flux_schnell")
+        self.assertFalse(r_flux["snapshot"]["vramSafeLatent"])
+
+        flux_prompt = next(s["prompt"] for s in self.submitted if s["prompt_id"] == r_flux["id"])
+        self.assertEqual(flux_prompt["4"]["inputs"]["width"], 1376)
+        self.assertEqual(flux_prompt["4"]["inputs"]["height"], 768)
+        self.assertEqual(flux_prompt["9"]["class_type"], "FluxDisableGuidance")
+        self.assertEqual(flux_prompt["5"]["inputs"]["positive"], ["9", 0])
+        self.assertEqual(flux_prompt["5"]["inputs"]["scheduler"], "simple")
+        self.assertEqual(flux_prompt["5"]["inputs"]["cfg"], 1.0)
+        self.assertEqual(flux_prompt["5"]["inputs"]["steps"], 4)
+        self.assertNotIn("lazypos", flux_prompt["2"]["inputs"]["text"].lower())
+
+        sdxl_prompt = next(s["prompt"] for s in self.submitted if s["prompt_id"] == r_sdxl["id"])
+        self.assertEqual(sdxl_prompt["4"]["inputs"]["width"], 1376)
+        self.assertEqual(sdxl_prompt["4"]["inputs"]["height"], 768)
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["sampler_name"], "dpmpp_2m")
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["scheduler"], "karras")
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["steps"], 25)
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["cfg"], 6.5)
+
+        sd15_prompt = next(s["prompt"] for s in self.submitted if s["prompt_id"] == r_sd15["id"])
+        self.assertEqual(sd15_prompt["5"]["inputs"]["sampler_name"], "dpmpp_2m")
+        self.assertEqual(sd15_prompt["5"]["inputs"]["scheduler"], "karras")
+        self.assertEqual(sd15_prompt["4"]["inputs"]["width"], 960)
+
+    async def test_rerun_text_image_updates_asset_without_edit_lock_and_bridge_cancel(self):
+        self.mock_system_stats = {
+            "devices": [{"name": "cuda:0 RTX 3060", "type": "cuda", "vram_total": 12288 * 1024 * 1024, "vram_free": 11000 * 1024 * 1024}]
+        }
+        project = await (await self.client.post("/studio/api/projects", json={"title": "Rerun & Cancel Bridge"})).json()
+        graph1 = {
+            "nodes": [
+                {"id": "txt1", "kind": "text", "x": 0, "y": 0, "text": "first prompt girl relaxing"},
+                {"id": "gen1", "kind": "text-image", "x": 360, "y": 0, "model": "Local GPU (VRAM)", "width": 1024, "height": 1024},
+            ],
+            "edges": [{"id": "e1", "source": "txt1", "sourcePort": "text", "target": "gen1", "targetPort": "prompt"}],
+        }
+        await self.client.put(f"/studio/api/projects/{project['id']}/graph", json={"version": 1, "graph": graph1})
+        run1 = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "gen1", "version": 2})).json()
+        for _ in range(20):
+            run1 = await (await self.client.get(f"/studio/api/runs/{run1['id']}")).json()
+            if run1["state"] == "succeeded":
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(run1["state"], "succeeded")
+
+        # Reconnect to txt2 on the same text-image node that already has assetId from run1
+        graph2 = {
+            "nodes": [
+                {"id": "txt2", "kind": "text", "x": 0, "y": 0, "text": "second prompt completely new scene"},
+                {"id": "gen1", "kind": "text-image", "x": 360, "y": 0, "model": "Local GPU (VRAM)", "width": 1024, "height": 1024, "assetId": run1["assetId"]},
+            ],
+            "edges": [{"id": "e2", "source": "txt2", "sourcePort": "text", "target": "gen1", "targetPort": "prompt"}],
+        }
+        await self.client.put(f"/studio/api/projects/{project['id']}/graph", json={"version": 2, "graph": graph2})
+        run2 = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "gen1", "version": 3})).json()
+        self.assertFalse(run2["snapshot"].get("editExistingNodeImage"))
+        self.assertIsNone(run2["snapshot"].get("sourceAssetId"))
+        for _ in range(20):
+            run2 = await (await self.client.get(f"/studio/api/runs/{run2['id']}")).json()
+            if run2["state"] == "succeeded":
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(run2["state"], "succeeded")
+        proj_after = await (await self.client.get(f"/studio/api/projects/{project['id']}")).json()
+        gen1_after = next(n for n in proj_after["graph"]["nodes"] if n["id"] == "gen1")
+        self.assertEqual(gen1_after["assetId"], run2["assetId"])
+        self.assertNotEqual(gen1_after["assetId"], run1["assetId"])
+
+        # Submit an Antigravity AI Bridge run mentioning "1st image" without wire, verify audit & cancel endpoint
+        graph3 = {
+            "nodes": [
+                {"id": "txt_b", "kind": "text", "x": 0, "y": 240, "text": "Kaela Kovalskia, the girl from 1st image sharing snacks"},
+                {"id": "bridge1", "kind": "text-image", "x": 360, "y": 240, "model": "Antigravity AI Bridge", "width": 1376, "height": 768},
+            ],
+            "edges": [{"id": "eb", "source": "txt_b", "sourcePort": "text", "target": "bridge1", "targetPort": "prompt"}],
+        }
+        await self.client.put(f"/studio/api/projects/{project['id']}/graph", json={"version": 3, "graph": graph3})
+        bridge_run = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "bridge1", "version": 4})).json()
+        self.assertEqual(bridge_run["state"], "running")
+        self.assertTrue(bridge_run["snapshot"].get("bridgePending"))
+        self.assertTrue(bridge_run["snapshot"]["auditReport"]["imageAudit"].get("referenceWarning"))
+
+        cancel_res = await self.client.post(f"/studio/api/runs/{bridge_run['id']}/cancel")
+        self.assertEqual(cancel_res.status, 200)
+        cancelled = await cancel_res.json()
+        self.assertEqual(cancelled["state"], "failed")
+        self.assertFalse(cancelled["snapshot"].get("bridgePending"))
+        self.assertTrue(cancelled["snapshot"].get("bridgeCancelled"))
+
+    def test_detect_comfy_worker_flags_cpu_fallback_and_12gb_normalvram(self):
+        from unittest.mock import patch
+        from studio.__main__ import detect_comfy_worker_flags
+
+        with patch("studio.__main__.probe_gpu_environment", return_value={
+            "nvidiaSmiFound": True, "hardwareGpuName": "RTX 3060", "hardwareVramMB": 12288.0,
+            "torchInstalled": True, "torchVersion": "2.12.1+cpu", "torchCudaAvailable": False,
+            "torchCudaVersion": "", "torchGpuName": "", "torchVramMB": 0.0,
+        }):
+            self.assertEqual(detect_comfy_worker_flags(), ["--disable-auto-launch", "--cpu"])
+
+        with patch("studio.__main__.probe_gpu_environment", return_value={
+            "nvidiaSmiFound": True, "hardwareGpuName": "RTX 3060", "hardwareVramMB": 12288.0,
+            "torchInstalled": True, "torchVersion": "2.7.0+cu126", "torchCudaAvailable": True,
+            "torchCudaVersion": "12.6", "torchGpuName": "NVIDIA GeForce RTX 3060", "torchVramMB": 12288.0,
+        }):
+            self.assertEqual(detect_comfy_worker_flags(), ["--disable-auto-launch", "--normalvram"])
+
+        with patch("studio.__main__.probe_gpu_environment", return_value={
+            "nvidiaSmiFound": True, "hardwareGpuName": "GTX 1650", "hardwareVramMB": 4096.0,
+            "torchInstalled": True, "torchVersion": "2.7.0+cu126", "torchCudaAvailable": True,
+            "torchCudaVersion": "12.6", "torchGpuName": "NVIDIA GeForce GTX 1650", "torchVramMB": 4096.0,
+        }):
+            self.assertEqual(
+                detect_comfy_worker_flags(),
+                ["--disable-auto-launch", "--lowvram", "--fp32-vae", "--force-upcast-attention"],
+            )
 
 
 if __name__ == "__main__":

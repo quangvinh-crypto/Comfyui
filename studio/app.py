@@ -18,7 +18,16 @@ import av
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
-from studio.runner import ComfyClient, history_error, image_image_prompt, text_image_prompt, vram_safe_latent_dims
+from studio.runner import (
+    ComfyClient,
+    history_error,
+    image_image_prompt,
+    infer_checkpoint_family,
+    recommended_max_edge,
+    select_best_checkpoint,
+    text_image_prompt,
+    vram_safe_latent_dims,
+)
 
 
 CATALOG = [
@@ -770,27 +779,6 @@ def run_snapshot(graph, node_id, project_id=None, db=None, combination_index=Non
 
         if edge:
             snapshot["promptSourceId"] = edge.get("source")
-
-        existing_node_asset_id = str(task.get("baseImageAssetId") or task.get("assetId") or "").strip()
-        if edge and existing_node_asset_id and task.get("subKind") != "variations":
-            is_from_same_text_flow1 = False
-            if not task.get("baseImageAssetId") and db is not None:
-                prev_row = db.execute(
-                    "SELECT snapshot FROM runs WHERE node_id = ? AND asset_id = ? LIMIT 1",
-                    (node_id, existing_node_asset_id),
-                ).fetchone()
-                if prev_row and prev_row["snapshot"]:
-                    try:
-                        prev_snap = json.loads(prev_row["snapshot"])
-                        if prev_snap.get("promptSourceId") == edge.get("source") and not prev_snap.get("editExistingNodeImage"):
-                            is_from_same_text_flow1 = True
-                    except Exception:
-                        pass
-            if not is_from_same_text_flow1:
-                snapshot["editExistingNodeImage"] = True
-                snapshot["originalNodeAssetId"] = existing_node_asset_id
-                if existing_node_asset_id not in ref_asset_ids:
-                    ref_asset_ids.insert(0, existing_node_asset_id)
 
         if ref_asset_ids:
             snapshot["sourceAssetId"] = ref_asset_ids[0]
@@ -1641,6 +1629,16 @@ def build_bridge_audit_report(app, run_id, snapshot, source_path, model_configs,
 
     is_video_kind = snapshot.get("kind") in ("text-video", "image-video")
     out_ext = ".mp4" if is_video_kind else ".png"
+    lower_clean = clean_prompt.lower()
+    mentions_unwired_image = any(
+        kw in lower_clean
+        for kw in ("1st image", "first image", "2nd image", "second image", "from the image", "ảnh 1", "ảnh đầu", "ảnh thứ")
+    )
+    missing_ref_warning = (
+        "Prompt có nhắc tới ảnh tham chiếu (VD: '1st image') nhưng chưa nối dây vào cổng Ảnh tham chiếu!"
+        if mentions_unwired_image and not ref_paths and not (source_path and Path(source_path).is_file())
+        else None
+    )
     audit = {
         "runId": run_id,
         "kind": snapshot.get("kind", "text-image"),
@@ -1653,6 +1651,7 @@ def build_bridge_audit_report(app, run_id, snapshot, source_path, model_configs,
             "sourcePath": str(source_path) if source_path else None,
             "referenceAssetIds": ref_ids,
             "referencePaths": ref_paths,
+            "referenceWarning": missing_ref_warning,
             "sourceWidth": src_w,
             "sourceHeight": src_h,
             "sourceBytes": src_bytes,
@@ -1677,6 +1676,18 @@ def build_bridge_audit_report(app, run_id, snapshot, source_path, model_configs,
                 else "CẢNH BÁO - Kiểm tra lại nội dung prompt"
             ),
         },
+        "agentInstructions": (
+            {
+                "note": "Antigravity AI Bridge là hàng đợi dành cho Agent AI (không tự sinh ảnh nếu không có phiên Agent đang xử lý).",
+                "steps": [
+                    "1. Đọc referencePaths (nếu có) bằng read_file để giữ đồng nhất nhân vật.",
+                    f"2. Sinh ảnh {target_w}x{target_h} bám sát cleanPrompt.",
+                    f"3. Ghi file PNG trực tiếp vào outputPath ({Path(output_dir) / f'{run_id}{out_ext}' if output_dir else run_id + out_ext}); Studio tự động nhận và hiện lên card.",
+                ],
+            }
+            if is_bridge
+            else None
+        ),
     }
     if is_video_kind:
         audit["videoAudit"] = {
@@ -4128,13 +4139,7 @@ def sync_completed_run_to_graph(db, project_id, node_id, asset_id, asset_kind, s
             )
         return
 
-    is_edit_existing = bool(snapshot.get("editExistingNodeImage"))
-    if is_edit_existing:
-        orig_id = snapshot.get("originalNodeAssetId")
-        if orig_id and src_node.get("assetId") != orig_id:
-            src_node["assetId"] = orig_id
-            changed = True
-    elif src_node.get("assetId") != asset_id:
+    if src_node.get("assetId") != asset_id:
         src_node["assetId"] = asset_id
         changed = True
     if snapshot.get("glbAssetId"):
@@ -4273,31 +4278,6 @@ def sync_completed_run_to_graph(db, project_id, node_id, asset_id, asset_kind, s
                     target["viewMode"] = "grid"
                     changed = True
 
-    if is_edit_existing and not has_downstream_output and asset_kind == "image":
-        prod_id = f"prod-{str(node_id)[:12]}"
-        edge_id = f"edge-prod-{str(node_id)[:12]}"
-        existing_prod = next((n for n in nodes if n.get("id") == prod_id), None)
-        if existing_prod:
-            existing_prod["kind"] = "image"
-            existing_prod["assetId"] = asset_id
-        else:
-            nodes.append({
-                "id": prod_id,
-                "kind": "image",
-                "x": int(round(float(src_node.get("x", 0)) + 460)),
-                "y": int(round(float(src_node.get("y", 0)))),
-                "assetId": asset_id,
-            })
-        if not any(e.get("id") == edge_id or (e.get("source") == node_id and e.get("target") == prod_id) for e in edges):
-            edges.append({
-                "id": edge_id,
-                "source": node_id,
-                "sourcePort": "image",
-                "target": prod_id,
-                "targetPort": "image",
-            })
-        changed = True
-
     if changed:
         now_iso = datetime.now(timezone.utc).isoformat()
         db.execute(
@@ -4327,18 +4307,38 @@ def reconcile_bridge_runs(app, db, project_id=None):
         pid = row["project_id"]
         out_dir = Path(row["output_dir"]) if row["output_dir"] else result_directory(app, project_id=pid, db=db)
         found_file = None
+        bridge_dir = app[ASSET_DIR].parent / "bridge_queue"
+        q_file = bridge_dir / f"{run_id}.json"
         for ext in (".png", ".jpg", ".jpeg", ".webp"):
             cand = out_dir / f"{run_id}{ext}"
             if cand.is_file() and cand.stat().st_size > 0:
                 found_file = cand
                 break
+        if found_file is None:
+            for ext in (".png", ".jpg", ".jpeg", ".webp"):
+                cand = bridge_dir / f"{run_id}{ext}"
+                if cand.is_file() and cand.stat().st_size > 0:
+                    found_file = cand
+                    break
+        if found_file is None and q_file.is_file():
+            try:
+                q_meta = json.loads(q_file.read_text(encoding="utf-8"))
+                gen_p = str(q_meta.get("generatedPath") or q_meta.get("outputPath") or "").strip()
+                if gen_p:
+                    cand = Path(gen_p)
+                    if cand.is_file() and cand.stat().st_size > 0 and cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        found_file = cand
+            except Exception:
+                pass
         if not found_file:
             continue
         dst_png = out_dir / f"{run_id}.png"
-        if found_file.suffix.lower() != ".png":
+        dst_png.parent.mkdir(parents=True, exist_ok=True)
+        if found_file.resolve() != dst_png.resolve():
             with Image.open(found_file) as im:
                 im.convert("RGB").save(dst_png, format="PNG")
-            found_file.unlink(missing_ok=True)
+            if found_file.parent.resolve() == out_dir.resolve() and found_file.suffix.lower() != ".png":
+                found_file.unlink(missing_ok=True)
         raw_bytes = dst_png.read_bytes()
         size = len(raw_bytes)
         digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -4403,7 +4403,8 @@ def _prepare_comfy_upload_image(source_path, snapshot, is_upscaler_run, output_d
                 ref_w = sw if is_upscaler_run else int(snapshot.get("width") or sw)
                 ref_h = sh if is_upscaler_run else int(snapshot.get("height") or sh)
                 if snapshot.get("vramSafeLatent"):
-                    safe_w, safe_h = vram_safe_latent_dims(ref_w, ref_h, max_edge=768)
+                    max_edge = int(snapshot.get("maxLatentEdge") or 768)
+                    safe_w, safe_h = vram_safe_latent_dims(ref_w, ref_h, max_edge=max_edge)
                 else:
                     safe_w, safe_h = align_16(ref_w, 64, 2048), align_16(ref_h, 64, 2048)
                 if (sw, sh) != (safe_w, safe_h):
@@ -4724,11 +4725,55 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
         return web.json_response({"models": cleaned})
 
     async def comfy_status(request):
+        bridge_dir = request.app[ASSET_DIR].parent / "bridge_queue"
+        pending_bridge = 0
+        if bridge_dir.is_dir():
+            for qp in bridge_dir.glob("*.json"):
+                try:
+                    if json.loads(qp.read_text(encoding="utf-8")).get("status") == "pending":
+                        pending_bridge += 1
+                except Exception:
+                    pass
         try:
             checkpoints = await request.app[COMFY_CLIENT].checkpoints()
+            sys_stats = await request.app[COMFY_CLIENT].system_stats()
         except (ClientError, asyncio.TimeoutError, KeyError, TypeError, ValueError):
-            return web.json_response({"connected": False, "checkpoints": [], "message": "Không kết nối được ComfyUI. Hãy chạy worker ở địa chỉ đã cấu hình."})
-        return web.json_response({"connected": True, "checkpoints": checkpoints, "message": "Không tìm thấy checkpoint. Hãy đặt model trong models/checkpoints rồi tải lại." if not checkpoints else ""})
+            return web.json_response({
+                "connected": False,
+                "checkpoints": [],
+                "bestCheckpoint": "",
+                "pendingBridgeCount": pending_bridge,
+                "warnings": [],
+                "message": "Không kết nối được ComfyUI. Hãy chạy worker ở địa chỉ đã cấu hình.",
+            })
+        vram_total_mb = float((sys_stats or {}).get("vramTotalMB") or 0.0)
+        vram_free_mb = float((sys_stats or {}).get("vramFreeMB") or 0.0)
+        dev_type = str((sys_stats or {}).get("deviceType") or "unknown")
+        gpu_name = str((sys_stats or {}).get("gpuName") or "")
+        best_ckpt = select_best_checkpoint(checkpoints, vram_total_mb)
+        vram_tier = "12gb+" if vram_total_mb >= 10000 else ("8gb" if vram_total_mb > 6500 else ("4gb-6gb" if vram_total_mb > 0 else "unknown"))
+        warnings = []
+        if dev_type == "cpu":
+            warnings.append("ComfyUI Worker đang chạy chế độ CPU (PyTorch thiếu CUDA). Hãy chạy '.\\studio doctor' để xem lệnh cài torch CUDA.")
+        if vram_total_mb >= 10000 and checkpoints and all(infer_checkpoint_family(c) == "sd15" for c in checkpoints):
+            warnings.append(
+                f"GPU có {int(vram_total_mb)} MB VRAM nhưng mới có model SD 1.5 ({checkpoints[0]}, giới hạn 77 token). "
+                "Nên thêm Flux.1 Schnell FP8 hoặc SDXL/Animagine XL vào models/checkpoints để bám sát prompt dài."
+            )
+        msg = "Không tìm thấy checkpoint. Hãy đặt model trong models/checkpoints rồi tải lại." if not checkpoints else (warnings[0] if warnings else "")
+        return web.json_response({
+            "connected": True,
+            "checkpoints": checkpoints,
+            "bestCheckpoint": best_ckpt,
+            "device": dev_type,
+            "gpuName": gpu_name,
+            "vramTotalMB": vram_total_mb,
+            "vramFreeMB": vram_free_mb,
+            "vramTier": vram_tier,
+            "pendingBridgeCount": pending_bridge,
+            "warnings": warnings,
+            "message": msg,
+        })
 
     async def list_runs(request):
         project_id = request.query.get("project_id")
@@ -4777,12 +4822,15 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
                 if not snapshot.get("sourceAssetId"):
                     snapshot["sourceAssetId"] = clean_refs[0]
         checkpoints = []
+        sys_stats = None
         comfy_online = False
         try:
             checkpoints = await request.app[COMFY_CLIENT].checkpoints()
             comfy_online = True
+            sys_stats = await request.app[COMFY_CLIENT].system_stats()
         except (ClientError, asyncio.TimeoutError, KeyError, TypeError, ValueError):
             comfy_online = False
+        vram_mb = float((sys_stats or {}).get("vramTotalMB") or 0.0)
 
         model_configs = load_model_configs(request.app)
         is_video_run = snapshot["kind"] in (
@@ -4827,8 +4875,7 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
                 )
             snapshot["requestedModel"] = "Local GPU (VRAM)"
             snapshot["executionMode"] = "gpu"
-            snapshot["vramSafeLatent"] = True
-            selected_model = checkpoints[0]
+            selected_model = select_best_checkpoint(checkpoints, vram_mb)
             snapshot["model"] = selected_model
 
         selected_cfg = configured_image_models.get(selected_model) or {}
@@ -4850,16 +4897,22 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
                 )
 
         if (not is_video_run) and (not is_audio_run) and (not is_stt_run) and (not is_3d_run) and (not is_upscaler_run) and comfy_online and checkpoints and snapshot["model"].lower() == "auto" and not is_bridge_model:
-            snapshot["model"] = checkpoints[0]
+            snapshot["model"] = select_best_checkpoint(checkpoints, vram_mb)
             snapshot["executionMode"] = "gpu"
-            snapshot["vramSafeLatent"] = True
         elif snapshot["model"] in checkpoints:
             snapshot["executionMode"] = "gpu"
-            snapshot["vramSafeLatent"] = True
         elif is_bridge_model:
             snapshot["executionMode"] = "bridge"
         else:
             snapshot["executionMode"] = "api" if snapshot["model"] in configured_image_models else "local_fallback"
+
+        if snapshot.get("executionMode") == "gpu":
+            family = infer_checkpoint_family(snapshot["model"])
+            max_edge = recommended_max_edge(vram_mb, family)
+            snapshot["checkpointFamily"] = family
+            snapshot["gpuVramMB"] = vram_mb
+            snapshot["maxLatentEdge"] = max_edge
+            snapshot["vramSafeLatent"] = True if vram_mb <= 6500 else (max(int(snapshot.get("width", 512)), int(snapshot.get("height", 512))) > max_edge)
 
         output_dir = result_directory(request.app, project_id=project["id"], project_title=project["title"])
         run_id = str(uuid.uuid4())
@@ -5744,6 +5797,36 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
             stats = purge_records_and_files(db, request.app[ASSET_DIR], node_ids, asset_ids, run_ids)
         return web.json_response({"ok": True, **stats})
 
+    async def cancel_run(request):
+        run_id = request.match_info["run_id"]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with database(request.app[DB_PATH]) as db:
+            row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                return web.json_response({"error": "Không tìm thấy lần chạy."}, status=404)
+            try:
+                snap = json.loads(row["snapshot"] or "{}")
+            except Exception:
+                snap = {}
+            snap.pop("bridgePending", None)
+            snap["bridgeCancelled"] = True
+            if row["state"] in ("submitting", "queued", "running"):
+                db.execute(
+                    "UPDATE runs SET state = 'failed', error = ?, snapshot = ?, updated_at = ? WHERE id = ?",
+                    ("Đã hủy tiến trình theo yêu cầu người dùng.", json.dumps(snap, ensure_ascii=False), now_iso, run_id),
+                )
+                row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        q_file = request.app[ASSET_DIR].parent / "bridge_queue" / f"{run_id}.json"
+        if q_file.is_file():
+            try:
+                q_obj = json.loads(q_file.read_text(encoding="utf-8"))
+                q_obj["status"] = "cancelled"
+                q_obj["cancelledAt"] = now_iso
+                q_file.write_text(json.dumps(q_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        return web.json_response(run_payload(row))
+
     async def list_bridge_queue(request):
         bridge_dir = request.app[ASSET_DIR].parent / "bridge_queue"
         if not bridge_dir.is_dir():
@@ -5770,6 +5853,7 @@ def create_app(data_dir, comfy_url="http://127.0.0.1:8188"):
     app.router.add_get("/studio/api/runs", list_runs)
     app.router.add_post("/studio/api/runs", create_run)
     app.router.add_get("/studio/api/runs/{run_id}", get_run)
+    app.router.add_post("/studio/api/runs/{run_id}/cancel", cancel_run)
     app.router.add_get("/studio/api/assets", list_assets)
     app.router.add_post("/studio/api/assets", upload_asset)
     app.router.add_get("/studio/api/assets/{asset_id}/content", asset_content)

@@ -1096,7 +1096,7 @@ async function refreshRuns() {
       if (r.state === "succeeded" && r.assetId && r.nodeId && !seenLatestByNode.has(r.nodeId)) {
         seenLatestByNode.add(r.nodeId);
         const targetNode = state.graph?.nodes?.find((n) => n.id === r.nodeId);
-        if (targetNode && !r.snapshot?.editExistingNodeImage && targetNode.historyIndex === undefined) {
+        if (targetNode && targetNode.historyIndex === undefined) {
           targetNode.assetId = r.assetId;
         }
       }
@@ -2705,14 +2705,7 @@ function syncAllVariationNodesToLists() {
       const succeeded = nodeSucceededRuns(node.id);
       if (!succeeded.length) continue;
       const latest = succeeded[succeeded.length - 1];
-      const isEditExisting = Boolean(latest.snapshot?.editExistingNodeImage);
-      if (isEditExisting) {
-        const origId = latest.snapshot?.originalNodeAssetId;
-        if (origId && node.assetId !== origId) {
-          node.assetId = origId;
-          anyChanged = true;
-        }
-      } else if (latest.assetId && node.assetId !== latest.assetId) {
+      if (latest.assetId && node.assetId !== latest.assetId) {
         node.assetId = latest.assetId;
         anyChanged = true;
       }
@@ -2762,37 +2755,6 @@ function syncAllVariationNodesToLists() {
             targetNode.assetId = edgeAssetId;
             anyChanged = true;
           }
-        }
-      }
-      if (isEditExisting && !outEdges.length && latest.assetId && itemKind === "image") {
-        const prodId = `prod-${String(node.id).slice(0, 12)}`;
-        const edgeId = `edge-prod-${String(node.id).slice(0, 12)}`;
-        let prodNode = state.graph.nodes.find((n) => n.id === prodId);
-        if (prodNode) {
-          if (prodNode.assetId !== latest.assetId || prodNode.kind !== "image") {
-            prodNode.kind = "image";
-            prodNode.assetId = latest.assetId;
-            anyChanged = true;
-          }
-        } else {
-          state.graph.nodes.push({
-            id: prodId,
-            kind: "image",
-            x: Math.round((node.x || 0) + 460),
-            y: Math.round(node.y || 0),
-            assetId: latest.assetId,
-          });
-          anyChanged = true;
-        }
-        if (!state.graph.edges.some((e) => e.id === edgeId || (e.source === node.id && e.target === prodId))) {
-          state.graph.edges.push({
-            id: edgeId,
-            source: node.id,
-            sourcePort: "image",
-            target: prodId,
-            targetPort: "image",
-          });
-          anyChanged = true;
         }
       }
       const connectedLists = outEdges
@@ -3742,6 +3704,18 @@ async function runNode(nodeId) {
   if (node._batchRunning || node._running) {
     node._abortBatch = true;
     notify("Đang dừng tiến trình chạy hàng loạt...");
+    return;
+  }
+  const activePending = latestRun(node.id);
+  if (isBridgePending(activePending)) {
+    try {
+      await request(`/runs/${encodeURIComponent(activePending.id)}/cancel`, { method: "POST" });
+      await refreshRuns();
+      renderGraph();
+      notify("Đã hủy tiến trình đang chờ. Bạn có thể chọn Local GPU (VRAM) và chạy lại!");
+    } catch (err) {
+      notify(err?.message || "Không thể hủy tiến trình.");
+    }
     return;
   }
 
@@ -5151,8 +5125,9 @@ function addNode(kind, connectFromNodeId = null, customPos = null, extraOptions 
     if (confImg.length) {
       node.model = confImg[0];
       node.presetLabel = confImg[0];
-    } else if (state.comfy.checkpoints.length === 1) {
-      node.model = state.comfy.checkpoints[0];
+    } else if (state.comfy.connected && state.comfy.checkpoints.length > 0) {
+      node.model = "Local GPU (VRAM)";
+      node.presetLabel = "Local GPU (VRAM)";
     }
   }
   if (kind === "upscaler") {
@@ -6651,7 +6626,8 @@ function taskControls(node, card) {
   const statusText = taskStatus(node);
   status.innerHTML = `<span class="node-status-dot"></span><span>${escapeHtml(statusText === "Chưa chạy" ? "" : statusText)}</span>`;
 
-  const isRunningNow = Boolean(node._batchRunning || node._running);
+  const latestForStop = latestRun(node.id);
+  const isRunningNow = Boolean(node._batchRunning || node._running || isBridgePending(latestForStop));
   const rerunSvg =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>';
   const stopSvg =
@@ -6663,7 +6639,7 @@ function taskControls(node, card) {
   run.dataset.runFor = node.id;
   run.innerHTML = isRunningNow ? stopSvg : hasResult ? rerunSvg : actionIcon("play");
   run.setAttribute("aria-label", isRunningNow ? "Stop" : hasResult ? "Re-run" : "Run");
-  run.title = isRunningNow ? "Stop batch (Dừng)" : hasResult ? "Re-run" : "Run";
+  run.title = isRunningNow ? "Dừng / Hủy tiến trình" : hasResult ? "Re-run" : "Run";
   run.disabled = isRunningNow ? false : !canRunTask(node);
   run.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -11757,9 +11733,7 @@ function renderGraph() {
       : node.kind === "upscaler"
         ? resolveUpstreamAssetId(node, "source_image")
         : "";
-    const displayAssetId = result?.snapshot?.editExistingNodeImage
-      ? result.snapshot.originalNodeAssetId || node.assetId
-      : result?.assetId || node.assetId || upstreamPreviewAssetId;
+    const displayAssetId = result?.assetId || node.assetId || upstreamPreviewAssetId;
     const rawAsset = state.assets.find((item) => item.id === displayAssetId);
     const asset = isVideoTask && rawAsset && rawAsset.kind !== "video" ? null : rawAsset;
     const isRunning = Boolean(node._batchRunning || isBridgePending(latest));
@@ -13526,14 +13500,6 @@ function finishConnection(targetId, targetPortId) {
   });
   const srcNode = state.graph.nodes.find((n) => n.id === state.pending.nodeId);
   const srcTitle = srcNode ? nodeDisplayTitle(srcNode) : "";
-  if (targetPortId === "prompt" && target.kind === "text-image") {
-    const existingAssetId = target.assetId || activeNodeRun(target)?.assetId || "";
-    if (existingAssetId) {
-      target.baseImageAssetId = existingAssetId;
-    } else {
-      delete target.baseImageAssetId;
-    }
-  }
   if (
     (srcNode?.kind === "list" ||
       state.pending.type === "image" ||
