@@ -22,10 +22,11 @@ const VIDEO_DURATIONS = ["5s", "10s", '2-4"', '5-6"', '8-10"', '10+"'];
 const VIDEO_RESOLUTIONS = ["Auto", "480p", "720p", "1080p"];
 
 const PRESET_MODELS = [
-  // FEATURED
-  { id: "auto", label: "Auto", badge: "auto", group: "FEATURED", noPin: true },
-  { id: "local-gpu-vram", label: "Local GPU (VRAM)", badge: "gpu", group: "FEATURED", tag: "VRAM", tagType: "new", featuredAccent: true },
-  { id: "antigravity-ai-bridge", label: "Antigravity AI Bridge", badge: "auto", group: "FEATURED", tag: "Free", tagType: "new", featuredAccent: true },
+  // LOCAL (shown in top Local GPU section, excluded from API FEATURED section)
+  { id: "local-gpu-vram", label: "Local GPU (VRAM)", badge: "gpu", group: "LOCAL", tag: "Ảnh · VRAM", tagType: "new", featuredAccent: true },
+  // FEATURED (API & Bridge Models)
+  { id: "auto", label: "Auto", badge: "auto", group: "FEATURED", tag: "Ảnh · API", tagType: "beta", noPin: true },
+  { id: "antigravity-ai-bridge", label: "Antigravity AI Bridge", badge: "auto", group: "FEATURED", tag: "Ảnh · Bridge", tagType: "new", featuredAccent: true },
   { id: "magnific-one", label: "Magnific One", badge: "magnific", group: "FEATURED", tag: "New", tagType: "new", featuredAccent: true },
   { id: "google-nano-banana-2.1", label: "Google Nano Banana 2.1", badge: "google", group: "FEATURED", tag: "New", tagType: "new" },
   { id: "gpt-2.5", label: "GPT 2.5", badge: "openai", group: "FEATURED", tag: "Beta", tagType: "beta" },
@@ -1347,13 +1348,13 @@ function openModelSettingsModal(initialFilter = "all") {
       const leftCol = document.createElement("div");
       leftCol.className = "model-settings-col-left";
       const kindBadgeClass = item.kind === "video" ? "kind-video" : "kind-image";
-      const kindLabel = item.kind === "video" ? "Video" : "Image";
+      const kindLabel = item.kind === "video" ? "Tạo Video · API" : "Tạo Ảnh · API";
       leftCol.innerHTML = `
         <span class="model-configured-dot ${hasKey ? "is-configured" : ""}" title="${hasKey ? "Đã cấu hình API Key" : "Chưa cấu hình"}"></span>
         <span class="model-badge-icon">${modelBadgeSvg(item.badge)}</span>
         <span class="model-settings-name">${escapeHtml(item.label)}</span>
         <span class="model-kind-pill ${kindBadgeClass}">${kindLabel}</span>
-        ${item.tag ? `<span class="${item.tagType === "beta" ? "model-tag-beta" : "model-tag-new"}">${escapeHtml(item.tag)}</span>` : ""}
+        ${item.tag && !String(item.tag).includes("·") ? `<span class="${item.tagType === "beta" ? "model-tag-beta" : "model-tag-new"}">${escapeHtml(item.tag)}</span>` : ""}
       `;
 
       const rightCol = document.createElement("div");
@@ -1505,6 +1506,79 @@ function effectiveModel(node) {
   if (node.model && state.comfy.checkpoints.includes(node.model)) return node.model;
   if (!node.model && state.comfy.checkpoints.length === 1) return state.comfy.checkpoints[0];
   return node.model || "";
+}
+
+function describeLocalCheckpoint(ckptName) {
+  const raw = String(ckptName || "").trim();
+  const base = raw.split(/[\\/]/).pop() || raw;
+  const stem = base.replace(/\.(safetensors|ckpt|pt|bin)$/i, "");
+  const lower = stem.toLowerCase();
+  const isVideo =
+    /(?:^|[_\-\s.])(wan2|wan[-_]?2|hunyuan[-_]?video|ltx[-_]?video|ltxv|svd|cogvideo|mochi|animatediff)(?:$|[_\-\s.\d])/i.test(
+      lower
+    ) || /video/i.test(lower);
+  const mediaKind = isVideo ? "video" : "image";
+
+  let familyTag = isVideo ? "Video · Local" : "Ảnh · SD1.5";
+  if (!isVideo) {
+    if (lower.includes("flux")) familyTag = "Ảnh · Flux";
+    else if (lower.includes("sd3")) familyTag = "Ảnh · SD3";
+    else if (
+      /(sdxl|illustrious|animagine|juggernautxl|ponyxl|kohaku-xl|dreamshaperxl|realvisxl)/.test(lower) ||
+      /(?:^|[_\-\s.])(sdxl|xl|illustrious|animagine|pony|juggernaut)(?:$|[_\-\s.\d])/.test(lower)
+    ) {
+      familyTag = "Ảnh · SDXL";
+    }
+  }
+
+  let clean = stem.replace(/(?:[_\-\s.](?:pruned|fp8|fp16|bf16|e4m3fn|vae|noema|safetensors))+$/gi, "");
+  clean = clean.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+  clean = clean.replace(/(?<!\d)-([a-z])/g, " $1").replace(/\s+/g, " ").trim();
+  clean = clean
+    .split(" ")
+    .map((w) => {
+      if (!w) return w;
+      if (/^(xl|sdxl|sd|sd3|v\d+.*)$/i.test(w)) return w.toUpperCase().replace(/^V/, "v");
+      if (/^flux1$/i.test(w)) return "Flux.1";
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(" ");
+  if (!clean) clean = raw;
+
+  let styleHint = "";
+  if (lower.includes("animagine") || lower.includes("illustrious") || lower.includes("pony") || lower.includes("noobai")) {
+    styleHint = "Anime";
+  } else if (lower.includes("dreamshaper")) {
+    styleHint = "Bán tả thực";
+  } else if (lower.includes("juggernaut") || lower.includes("realvis") || lower.includes("realism")) {
+    styleHint = "Tả thực";
+  } else if (lower.includes("flux")) {
+    styleHint = "Siêu nét";
+  }
+
+  const roleAction = isVideo ? "Tạo Video" : "Tạo Ảnh";
+  const shortSuffix = isVideo ? "Video" : "Ảnh";
+  const friendlyLabel = styleHint ? `${clean} · ${styleHint} (${roleAction})` : `${clean} (${roleAction})`;
+  const pillLabel = `${clean} (${shortSuffix})`;
+  return { id: raw, cleanTitle: clean, friendlyLabel, pillLabel, roleTag: familyTag, mediaKind };
+}
+
+function friendlyModelPillLabel(rawName, cardKind = "image") {
+  const name = String(rawName || "").trim();
+  if (name === "Local GPU (VRAM)" || name === "local-gpu-vram") {
+    return cardKind === "video" ? "Local GPU (Tạo Video)" : cardKind === "upscaler" ? "Local GPU (Nâng nét Ảnh)" : "Local GPU (Tạo Ảnh)";
+  }
+  if (name === "Antigravity AI Bridge" || name === "antigravity-ai-bridge") {
+    return cardKind === "video" ? "Antigravity Bridge (Video)" : "Antigravity Bridge (Ảnh)";
+  }
+  if (name === "Auto" || name === "auto") {
+    return cardKind === "video" ? "Auto · Video" : "Auto · Ảnh";
+  }
+  if (state.comfy?.checkpoints?.includes(name) || /\.(safetensors|ckpt|pt)$/i.test(name)) {
+    return describeLocalCheckpoint(name).pillLabel;
+  }
+  const preset = PRESET_MODELS.find((item) => item.id === name || item.label === name);
+  return preset ? preset.label : name;
 }
 
 function displayModelName(node) {
@@ -5686,45 +5760,101 @@ function buildModelPopover(node, card) {
   function renderOptions() {
     list.replaceChildren();
     const q = searchInput.value.trim().toLocaleLowerCase("vi");
+    const shownModel = displayModelName(node);
 
-    if (state.comfy.checkpoints.length) {
-      const localMatches = state.comfy.checkpoints.filter((ckpt) => !q || ckpt.toLocaleLowerCase("vi").includes(q));
-      if (localMatches.length) {
-        const groupTitle = document.createElement("div");
-        groupTitle.className = "popover-group-title";
-        groupTitle.textContent = "LOCAL CHECKPOINTS";
-        list.append(groupTitle);
-        for (const ckpt of localMatches) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = `popover-option ${node.model === ckpt && !node.presetLabel ? "active" : ""}`;
-          btn.innerHTML = `<span class="model-configured-dot is-configured" title="Checkpoint ComfyUI đã sẵn sàng"></span><span class="model-badge-icon">${modelBadgeSvg("C")}</span><span class="model-option-label">${escapeHtml(ckpt)}</span>`;
-          btn.addEventListener("click", () => {
-            remember();
-            node.model = ckpt;
-            delete node.presetLabel;
-            closeAllPopovers();
-            markDirty();
-            renderGraph();
-          });
-          list.append(btn);
-        }
+    // 1. TOP: MODEL LOCAL · CHẠY GPU MÁY (Tạo Ảnh)
+    const imageCheckpoints = (state.comfy.checkpoints || [])
+      .map((ckpt) => describeLocalCheckpoint(ckpt))
+      .filter((info) => info.mediaKind !== "video");
+    const localAutoTitle = "Local GPU · Tự chọn tối ưu (Tạo Ảnh)";
+    const showLocalAuto =
+      !q ||
+      "local gpu vram tự chọn tạo ảnh".includes(q) ||
+      localAutoTitle.toLocaleLowerCase("vi").includes(q);
+    const localMatches = imageCheckpoints.filter(
+      (info) =>
+        !q ||
+        info.id.toLocaleLowerCase("vi").includes(q) ||
+        info.friendlyLabel.toLocaleLowerCase("vi").includes(q) ||
+        info.roleTag.toLocaleLowerCase("vi").includes(q)
+    );
+    if (showLocalAuto || localMatches.length) {
+      const localHeader = document.createElement("div");
+      localHeader.className = "popover-group-title";
+      localHeader.textContent = "MODEL LOCAL · CHẠY GPU MÁY (TẠO ẢNH)";
+      list.append(localHeader);
+
+      if (showLocalAuto) {
+        const gpuReady = Boolean(state.comfy?.connected && imageCheckpoints.length > 0);
+        const isCurrentGpu =
+          node.presetLabel === "Local GPU (VRAM)" ||
+          node.model === "Local GPU (VRAM)" ||
+          node.model === "local-gpu-vram";
+        const autoGpuBtn = document.createElement("button");
+        autoGpuBtn.type = "button";
+        autoGpuBtn.className = `popover-option featured-accent ${isCurrentGpu ? "active" : ""} ${gpuReady ? "has-config" : ""}`.trim();
+        autoGpuBtn.title = "Tự chọn model tốt nhất theo VRAM (Ưu tiên SDXL / Flux trên 12GB VRAM)";
+        autoGpuBtn.innerHTML = `
+          <span class="model-configured-dot ${gpuReady ? "is-configured" : ""}" title="${gpuReady ? "Sẵn sàng chạy GPU" : "Chưa kết nối ComfyUI hoặc chưa có checkpoint"}"></span>
+          <span class="model-badge-icon">${modelBadgeSvg("gpu")}</span>
+          <span class="model-option-label">${escapeHtml(localAutoTitle)}</span>
+          <span class="model-tag-role is-local">Ảnh · VRAM</span>
+        `;
+        autoGpuBtn.addEventListener("click", () => {
+          remember();
+          node.model = "Local GPU (VRAM)";
+          node.presetLabel = "Local GPU (VRAM)";
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(autoGpuBtn);
+      }
+
+      for (const info of localMatches) {
+        const isCurrentCkpt = node.model === info.id && !node.presetLabel;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option has-config ${isCurrentCkpt ? "active" : ""}`.trim();
+        btn.title = `File checkpoint: models/checkpoints/${info.id}`;
+        btn.innerHTML = `
+          <span class="model-configured-dot is-configured" title="Checkpoint Local ComfyUI đã sẵn sàng"></span>
+          <span class="model-badge-icon">${modelBadgeSvg("gpu")}</span>
+          <span class="model-option-stack">
+            <span class="model-option-label">${escapeHtml(info.friendlyLabel)}</span>
+            <span class="model-sub-filename">${escapeHtml(info.id)}</span>
+          </span>
+          <span class="model-tag-role is-local">${escapeHtml(info.roleTag)}</span>
+        `;
+        btn.addEventListener("click", () => {
+          remember();
+          node.model = info.id;
+          delete node.presetLabel;
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
       }
     }
 
-    for (const group of ["FEATURED", "ALL MODELS"]) {
+    // 2. BELOW: FEATURED & ALL API MODELS (Tạo Ảnh)
+    const apiGroups = [
+      { key: "FEATURED", heading: "FEATURED · MODEL API & CẦU NỐI (TẠO ẢNH)" },
+      { key: "ALL MODELS", heading: "TẤT CẢ MODEL API KHÁC (TẠO ẢNH)" },
+    ];
+    for (const grp of apiGroups) {
       const groupItems = PRESET_MODELS.filter(
-        (m) => m.group === group && (!q || m.label.toLocaleLowerCase("vi").includes(q))
+        (m) => m.group === grp.key && (!q || m.label.toLocaleLowerCase("vi").includes(q))
       );
       if (!groupItems.length) continue;
       const groupTitle = document.createElement("div");
       groupTitle.className = "popover-group-title";
-      groupTitle.textContent = group;
+      groupTitle.textContent = grp.heading;
       list.append(groupTitle);
       for (const item of groupItems) {
         const btn = document.createElement("button");
         btn.type = "button";
-        const shownModel = displayModelName(node);
         const isCurrent =
           node.presetLabel === item.label ||
           node.model === item.label ||
@@ -5732,12 +5862,13 @@ function buildModelPopover(node, card) {
           (!node.model && !node.presetLabel && shownModel === item.label);
         const configured = isModelConfigured(item.label, "image");
         btn.className = `popover-option ${isCurrent ? "active" : ""} ${item.featuredAccent ? "featured-accent" : ""} ${configured ? "has-config" : ""}`.trim();
-        const tagClass = item.tagType === "beta" ? "model-tag-beta" : "model-tag-new";
+        const roleLabel = item.tag || "Ảnh · API";
+        const tagClass = item.tagType === "beta" ? "model-tag-beta" : item.tagType === "new" ? "model-tag-new" : "model-tag-role";
         btn.innerHTML = `
-          <span class="model-configured-dot ${configured ? "is-configured" : ""}" title="${configured ? "Đã cấu hình API Key" : ""}"></span>
+          <span class="model-configured-dot ${configured ? "is-configured" : ""}" title="${configured ? "Đã cấu hình sẵn sàng" : "Cần nhập API Key trong Cài đặt"}"></span>
           <span class="model-badge-icon">${modelBadgeSvg(item.badge)}</span>
           <span class="model-option-label">${escapeHtml(item.label)}</span>
-          ${item.tag ? `<span class="${tagClass}">${escapeHtml(item.tag)}</span>` : ""}
+          <span class="${tagClass}">${escapeHtml(roleLabel)}</span>
           ${item.noPin ? "" : `<span class="model-pin-icon">${actionIcon("pin")}</span>`}
         `;
         btn.addEventListener("click", () => {
@@ -6524,8 +6655,10 @@ function taskControls(node, card) {
   modelBtn.className = "card-pill card-model-btn";
   modelBtn.setAttribute("aria-label", "Select model");
   const shownModel = node.presetLabel && !state.comfy.checkpoints.includes(node.model) ? node.presetLabel : displayModelName(node);
+  const shownPill = friendlyModelPillLabel(shownModel, "image");
   const shownConfigured = isModelConfigured(shownModel, "image");
-  modelBtn.innerHTML = `${shownConfigured ? '<span class="pill-configured-dot" title="Đã cấu hình API Key"></span>' : ""}<span class="pill-label">${escapeHtml(shownModel)}</span><span class="pill-chevron">▾</span>`;
+  modelBtn.title = shownModel !== shownPill ? `${shownPill} (${shownModel})` : shownPill;
+  modelBtn.innerHTML = `${shownConfigured ? '<span class="pill-configured-dot" title="Sẵn sàng chạy"></span>' : ""}<span class="pill-label">${escapeHtml(shownPill)}</span><span class="pill-chevron">▾</span>`;
   modelBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     selectNode(node.id);
@@ -6681,33 +6814,59 @@ function buildUpscalerModelPopover(node, card, triggerBtn = null) {
     list.replaceChildren();
     const q = searchInput.value.trim().toLocaleLowerCase("vi");
 
-    if (state.comfy.checkpoints.length) {
-      const localMatches = state.comfy.checkpoints.filter((ckpt) => !q || ckpt.toLocaleLowerCase("vi").includes(q));
-      if (localMatches.length) {
-        const groupTitle = document.createElement("div");
-        groupTitle.className = "popover-group-title";
-        groupTitle.textContent = "LOCAL CHECKPOINTS";
-        list.append(groupTitle);
-        for (const ckpt of localMatches) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = `popover-option ${currentModel === ckpt ? "active" : ""} has-config`.trim();
-          btn.innerHTML = `<span class="model-configured-dot is-configured" title="Checkpoint ComfyUI đã sẵn sàng"></span><span class="model-badge-icon">${modelBadgeSvg("C")}</span><span class="model-option-label">${escapeHtml(ckpt)}</span>`;
-          btn.addEventListener("click", () => selectUpscaleModel(ckpt));
-          list.append(btn);
-        }
+    // 1. TOP: MODEL LOCAL · CHẠY GPU MÁY (Phóng nét Ảnh)
+    const imageCheckpoints = (state.comfy.checkpoints || [])
+      .map((ckpt) => describeLocalCheckpoint(ckpt))
+      .filter((info) => info.mediaKind !== "video");
+    const showLocalGpu = !q || "local gpu vram phóng nét tạo ảnh".includes(q);
+    const localMatches = imageCheckpoints.filter(
+      (info) =>
+        !q ||
+        info.id.toLocaleLowerCase("vi").includes(q) ||
+        info.friendlyLabel.toLocaleLowerCase("vi").includes(q)
+    );
+    if (showLocalGpu || localMatches.length) {
+      const groupTitle = document.createElement("div");
+      groupTitle.className = "popover-group-title";
+      groupTitle.textContent = "MODEL LOCAL · CHẠY GPU MÁY (NÂNG NÉT ẢNH)";
+      list.append(groupTitle);
+      if (showLocalGpu) {
+        const isCurrentGpu = currentModel === "Local GPU (VRAM)" || currentModel === "local-gpu-vram";
+        const gpuReady = Boolean(state.comfy?.connected && imageCheckpoints.length > 0);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option ${isCurrentGpu ? "active" : ""} featured-accent ${gpuReady ? "has-config" : ""}`.trim();
+        btn.innerHTML = `<span class="model-configured-dot ${gpuReady ? "is-configured" : ""}" title="Sẵn sàng chạy GPU"></span><span class="model-badge-icon">${modelBadgeSvg("gpu")}</span><span class="model-option-label">Local GPU · Tự chọn (Nâng nét Ảnh)</span><span class="model-tag-role is-local">Ảnh · VRAM</span>`;
+        btn.addEventListener("click", () => selectUpscaleModel("Local GPU (VRAM)"));
+        list.append(btn);
+      }
+      for (const info of localMatches) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option ${currentModel === info.id ? "active" : ""} has-config`.trim();
+        btn.title = info.id;
+        btn.innerHTML = `<span class="model-configured-dot is-configured" title="Checkpoint ComfyUI đã sẵn sàng"></span><span class="model-badge-icon">${modelBadgeSvg("gpu")}</span><span class="model-option-stack"><span class="model-option-label">${escapeHtml(info.friendlyLabel)}</span><span class="model-sub-filename">${escapeHtml(info.id)}</span></span><span class="model-tag-role is-local">${escapeHtml(info.roleTag)}</span>`;
+        btn.addEventListener("click", () => selectUpscaleModel(info.id));
+        list.append(btn);
       }
     }
 
-    const groups = ["AI BRIDGE & SUPER-RESOLUTION", "DEDICATED UPSCALERS", "IMAGE MODELS (UPSCALING)"];
-    for (const group of groups) {
+    const groups = [
+      { key: "AI BRIDGE & SUPER-RESOLUTION", heading: "FEATURED · MODEL API & SIÊU PHÂN GIẢI (ẢNH)" },
+      { key: "DEDICATED UPSCALERS", heading: "CHUYÊN PHÓNG NÉT ẢNH (LOCAL / BUILT-IN)" },
+      { key: "IMAGE MODELS (UPSCALING)", heading: "MODEL TẠO ẢNH API (NÂNG NÉT)" },
+    ];
+    for (const grp of groups) {
       const groupItems = UPSCALER_MODELS.filter(
-        (m) => m.group === group && (!q || m.label.toLocaleLowerCase("vi").includes(q))
+        (m) =>
+          m.group === grp.key &&
+          m.id !== "local-gpu-vram" &&
+          (!q || m.label.toLocaleLowerCase("vi").includes(q))
       );
       if (!groupItems.length) continue;
       const groupTitle = document.createElement("div");
       groupTitle.className = "popover-group-title";
-      groupTitle.textContent = group;
+      groupTitle.textContent = grp.heading;
       list.append(groupTitle);
       for (const item of groupItems) {
         const btn = document.createElement("button");
@@ -6715,12 +6874,13 @@ function buildUpscalerModelPopover(node, card, triggerBtn = null) {
         const isCurrent = currentModel === item.label || currentModel === item.id;
         const configured = isModelConfigured(item.label, "upscaler");
         btn.className = `popover-option ${isCurrent ? "active" : ""} ${item.featuredAccent ? "featured-accent" : ""} ${configured ? "has-config" : ""}`.trim();
-        const tagClass = item.tagType === "beta" ? "model-tag-beta" : "model-tag-new";
+        const tagText = item.tag || (grp.key.includes("IMAGE MODELS") ? "Ảnh · API" : "Ảnh · Upscale");
+        const tagClass = item.tagType === "beta" ? "model-tag-beta" : item.tagType === "new" ? "model-tag-new" : "model-tag-role";
         btn.innerHTML = `
           <span class="model-configured-dot ${configured ? "is-configured" : ""}" title="${configured ? "Đã sẵn sàng sử dụng" : ""}"></span>
           <span class="model-badge-icon">${modelBadgeSvg(item.badge)}</span>
           <span class="model-option-label">${escapeHtml(item.label)}</span>
-          ${item.tag ? `<span class="${tagClass}">${escapeHtml(item.tag)}</span>` : ""}
+          <span class="${tagClass}">${escapeHtml(tagText)}</span>
         `;
         btn.addEventListener("click", () => selectUpscaleModel(item.label));
         list.append(btn);
@@ -6809,12 +6969,13 @@ function upscalerControls(node, card) {
   });
 
   const modelVal = node.upscaleModel || node.model || "Antigravity AI Bridge";
+  const modelPill = friendlyModelPillLabel(modelVal, "upscaler");
   const modelConfigured = isModelConfigured(modelVal, "upscaler");
   const modelBtn = document.createElement("button");
   modelBtn.type = "button";
   modelBtn.className = "card-pill card-model-btn upscaler-model-pill";
-  modelBtn.title = `Model Upscale: ${modelVal}`;
-  modelBtn.innerHTML = `${modelConfigured ? '<span class="pill-configured-dot" title="Đã sẵn sàng kết nối"></span>' : ""}<span class="pill-label">${escapeHtml(modelVal)}</span><span class="pill-chevron">▾</span>`;
+  modelBtn.title = `Model Nâng nét Ảnh: ${modelVal}`;
+  modelBtn.innerHTML = `${modelConfigured ? '<span class="pill-configured-dot" title="Đã sẵn sàng kết nối"></span>' : ""}<span class="pill-label">${escapeHtml(modelPill)}</span><span class="pill-chevron">▾</span>`;
   modelBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     selectNode(node.id);
@@ -7981,41 +8142,113 @@ function listNodeControls(node, card) {
 
 function buildVideoModelPopover(node, card) {
   const popover = document.createElement("div");
-  popover.className = "card-popover video-model-popover";
+  popover.className = "card-popover model-popover video-model-popover";
   popover.addEventListener("click", (e) => e.stopPropagation());
   popover.addEventListener("pointerdown", (e) => e.stopPropagation());
   popover.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "popover-search";
+  searchWrap.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" placeholder="Search video model" autocomplete="off">`;
+  const searchInput = searchWrap.querySelector("input");
 
   const list = document.createElement("div");
   list.className = "popover-list";
   const current = node.videoModel || "Auto";
 
-  for (const modelName of VIDEO_MODELS) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    const isAuto = modelName === "Auto";
-    const isGpu = modelName === "Local GPU (VRAM)" || modelName === "local-gpu-vram";
-    const isBridge = modelName === "Antigravity AI Bridge";
-    const configured = isModelConfigured(modelName, "video");
-    btn.className = `popover-option ${current === modelName ? "active" : ""} ${isBridge || isGpu ? "featured-accent" : ""} ${configured ? "has-config" : ""}`.trim();
-    const badgeHtml = isAuto
-      ? `<span class="video-auto-badge">${modelBadgeSvg("auto")}</span>`
-      : isGpu
-        ? `<span class="model-badge-icon">${modelBadgeSvg("gpu")}</span>`
-        : isBridge
-          ? `<span class="model-badge-icon">${modelBadgeSvg("auto")}</span>`
-          : `<span class="model-badge-icon">${modelBadgeSvg("cinematic")}</span>`;
-    const tagHtml = isGpu ? `<span class="model-tag-new">VRAM</span>` : isBridge ? `<span class="model-tag-new">Free</span>` : "";
-    btn.innerHTML = `<span class="model-configured-dot ${configured ? "is-configured" : ""}" title="${configured ? (isGpu ? "Sẵn sàng chạy GPU" : isBridge ? "Kết nối trực tiếp Antigravity AI Bridge" : "Đã cấu hình API Key") : ""}"></span>${badgeHtml}<span class="model-option-label">${escapeHtml(modelName)}</span>${tagHtml}`;
-    btn.addEventListener("click", () => {
-      remember();
-      node.videoModel = modelName;
-      closeAllPopovers();
-      markDirty();
-      renderGraph();
-    });
-    list.append(btn);
-  }
+  const renderVideoOptions = () => {
+    list.replaceChildren();
+    const q = searchInput.value.trim().toLocaleLowerCase("vi");
+
+    // 1. TOP: MODEL LOCAL · CHẠY TRÊN MÁY (Tạo Video)
+    const videoCheckpoints = (state.comfy?.checkpoints || [])
+      .map((ckpt) => describeLocalCheckpoint(ckpt))
+      .filter((info) => info.mediaKind === "video");
+    const showLocalGpu = !q || "local gpu vram tạo video xử lý cục bộ".includes(q);
+    const localVideoMatches = videoCheckpoints.filter(
+      (info) =>
+        !q ||
+        info.id.toLocaleLowerCase("vi").includes(q) ||
+        info.friendlyLabel.toLocaleLowerCase("vi").includes(q)
+    );
+    if (showLocalGpu || localVideoMatches.length) {
+      const localHeader = document.createElement("div");
+      localHeader.className = "popover-group-title";
+      localHeader.textContent = "MODEL LOCAL · CHẠY TRÊN MÁY (TẠO VIDEO)";
+      list.append(localHeader);
+      if (showLocalGpu) {
+        const isGpuSelected = current === "Local GPU (VRAM)" || current === "local-gpu-vram";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option ${isGpuSelected ? "active" : ""} featured-accent has-config`.trim();
+        btn.innerHTML = `<span class="model-configured-dot is-configured" title="Sẵn sàng chạy GPU / Cục bộ"></span><span class="model-badge-icon">${modelBadgeSvg("gpu")}</span><span class="model-option-label">Local GPU · Xử lý cục bộ (Tạo Video)</span><span class="model-tag-role is-video">Video · Local</span>`;
+        btn.addEventListener("click", () => {
+          remember();
+          node.videoModel = "Local GPU (VRAM)";
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
+      }
+      for (const info of localVideoMatches) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option ${current === info.id ? "active" : ""} has-config`.trim();
+        btn.title = info.id;
+        btn.innerHTML = `<span class="model-configured-dot is-configured" title="Checkpoint Video Local"></span><span class="model-badge-icon">${modelBadgeSvg("gpu")}</span><span class="model-option-stack"><span class="model-option-label">${escapeHtml(info.friendlyLabel)}</span><span class="model-sub-filename">${escapeHtml(info.id)}</span></span><span class="model-tag-role is-video">${escapeHtml(info.roleTag)}</span>`;
+        btn.addEventListener("click", () => {
+          remember();
+          node.videoModel = info.id;
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
+      }
+    }
+
+    // 2. BELOW: FEATURED & API VIDEO MODELS
+    const apiVideoModels = VIDEO_MODELS.filter(
+      (name) => name !== "Local GPU (VRAM)" && (!q || name.toLocaleLowerCase("vi").includes(q))
+    );
+    if (apiVideoModels.length) {
+      const apiHeader = document.createElement("div");
+      apiHeader.className = "popover-group-title";
+      apiHeader.textContent = "FEATURED & MODEL API (TẠO VIDEO)";
+      list.append(apiHeader);
+      for (const modelName of apiVideoModels) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        const isAuto = modelName === "Auto";
+        const isBridge = modelName === "Antigravity AI Bridge";
+        const configured = isModelConfigured(modelName, "video");
+        btn.className = `popover-option ${current === modelName ? "active" : ""} ${isBridge ? "featured-accent" : ""} ${configured ? "has-config" : ""}`.trim();
+        const badgeHtml = isAuto
+          ? `<span class="video-auto-badge">${modelBadgeSvg("auto")}</span>`
+          : isBridge
+            ? `<span class="model-badge-icon">${modelBadgeSvg("auto")}</span>`
+            : `<span class="model-badge-icon">${modelBadgeSvg("cinematic")}</span>`;
+        const tagHtml = isBridge
+          ? `<span class="model-tag-new">Video · Bridge</span>`
+          : isAuto
+            ? `<span class="model-tag-beta">Video · Auto</span>`
+            : `<span class="model-tag-role is-video">Video · API</span>`;
+        btn.innerHTML = `<span class="model-configured-dot ${configured ? "is-configured" : ""}" title="${configured ? (isBridge ? "Kết nối trực tiếp Antigravity AI Bridge" : "Đã cấu hình API Key") : "Cần nhập API Key trong Cài đặt"}"></span>${badgeHtml}<span class="model-option-label">${escapeHtml(modelName)}</span>${tagHtml}`;
+        btn.addEventListener("click", () => {
+          remember();
+          node.videoModel = modelName;
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
+      }
+    }
+  };
+
+  searchInput.addEventListener("input", renderVideoOptions);
+  renderVideoOptions();
 
   const foot = document.createElement("div");
   foot.className = "popover-foot";
@@ -8031,8 +8264,9 @@ function buildVideoModelPopover(node, card) {
   navHint.innerHTML = `<kbd>↑↓</kbd><span>Navigate</span>`;
   foot.append(allBtn, navHint);
 
-  popover.append(list, foot);
+  popover.append(searchWrap, list, foot);
   card.append(popover);
+  setTimeout(() => searchInput.focus(), 10);
 }
 
 function buildVideoRatioPopover(node, card) {
@@ -8105,32 +8339,68 @@ function buildModifyVideoModelPopover(node, card) {
   const renderOptions = () => {
     list.replaceChildren();
     const q = searchInput.value.trim().toLocaleLowerCase("vi");
-    for (const item of MODIFY_VIDEO_MODELS) {
-      if (q && !item.label.toLocaleLowerCase("vi").includes(q)) continue;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const isCurrent = current === item.label;
-      btn.className = `popover-option ${isCurrent ? "active" : ""}`.trim();
-      const badgeIcon =
-        item.badge === "minimax"
-          ? catalogIcon("provider-minimax")
-          : item.badge === "google"
-            ? `<span class="provider-g-glyph">G</span>`
-            : item.badge === "kling"
-              ? catalogIcon("provider-kling")
-              : modelBadgeSvg("cinematic");
-      const tagHtml = item.tag
-        ? `<span class="${item.tag === "New" ? "catalog-badge badge-new" : "model-tag-new"}" style="margin-left:auto">${escapeHtml(item.tag)}</span>`
-        : "";
-      btn.innerHTML = `<span class="model-badge-icon">${badgeIcon}</span><span class="model-option-label">${escapeHtml(item.label)}</span>${tagHtml}<span class="model-pin-icon">${actionIcon("pin")}</span>`;
-      btn.addEventListener("click", () => {
-        remember();
-        node.videoModel = item.label;
-        closeAllPopovers();
-        markDirty();
-        renderGraph();
-      });
-      list.append(btn);
+
+    const localItems = MODIFY_VIDEO_MODELS.filter(
+      (item) => item.id === "local-gpu-vram" && (!q || item.label.toLocaleLowerCase("vi").includes(q) || "local gpu video".includes(q))
+    );
+    if (localItems.length) {
+      const hLocal = document.createElement("div");
+      hLocal.className = "popover-group-title";
+      hLocal.textContent = "MODEL LOCAL · CHẠY TRÊN MÁY (CHỈNH VIDEO)";
+      list.append(hLocal);
+      for (const item of localItems) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `popover-option ${current === item.label ? "active" : ""} featured-accent has-config`.trim();
+        btn.innerHTML = `<span class="model-configured-dot is-configured"></span><span class="model-badge-icon">${modelBadgeSvg("gpu")}</span><span class="model-option-label">Local GPU · Xử lý cục bộ (Video)</span><span class="model-tag-role is-video">Video · Local</span>`;
+        btn.addEventListener("click", () => {
+          remember();
+          node.videoModel = item.label;
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
+      }
+    }
+
+    const apiItems = MODIFY_VIDEO_MODELS.filter(
+      (item) => item.id !== "local-gpu-vram" && (!q || item.label.toLocaleLowerCase("vi").includes(q))
+    );
+    if (apiItems.length) {
+      const hApi = document.createElement("div");
+      hApi.className = "popover-group-title";
+      hApi.textContent = "FEATURED & MODEL API (CHỈNH VIDEO)";
+      list.append(hApi);
+      for (const item of apiItems) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        const isCurrent = current === item.label;
+        const isBridge = item.id === "antigravity-ai-bridge";
+        btn.className = `popover-option ${isCurrent ? "active" : ""} ${isBridge ? "featured-accent" : ""}`.trim();
+        const badgeIcon =
+          item.badge === "minimax"
+            ? catalogIcon("provider-minimax")
+            : item.badge === "google"
+              ? `<span class="provider-g-glyph">G</span>`
+              : item.badge === "kling"
+                ? catalogIcon("provider-kling")
+                : item.badge === "auto"
+                  ? modelBadgeSvg("auto")
+                  : modelBadgeSvg("cinematic");
+        const tagHtml = isBridge
+          ? `<span class="model-tag-new" style="margin-left:auto">Video · Bridge</span>`
+          : `<span class="model-tag-role is-video">Video · API</span>`;
+        btn.innerHTML = `<span class="model-badge-icon">${badgeIcon}</span><span class="model-option-label">${escapeHtml(item.label)}</span>${tagHtml}`;
+        btn.addEventListener("click", () => {
+          remember();
+          node.videoModel = item.label;
+          closeAllPopovers();
+          markDirty();
+          renderGraph();
+        });
+        list.append(btn);
+      }
     }
   };
 
@@ -8618,13 +8888,14 @@ function videoNodeControls(node, card) {
     }
 
     const vModel = node.videoModel || "Antigravity AI Bridge";
+    const vPill = friendlyModelPillLabel(vModel, "video");
     const vModelConfigured = isModelConfigured(vModel, "video");
     const modelBtn = document.createElement("button");
     modelBtn.type = "button";
     modelBtn.className = "card-pill card-model-btn video-model-btn";
-    modelBtn.title = "Model";
+    modelBtn.title = `Model Tạo Video: ${vModel}`;
     modelBtn.setAttribute("aria-label", "Model");
-    modelBtn.innerHTML = `${vModelConfigured ? '<span class="pill-configured-dot" title="Đã cấu hình API Key"></span>' : ""}<span class="pill-label">${escapeHtml(vModel)}</span><span class="pill-chevron">▾</span>`;
+    modelBtn.innerHTML = `${vModelConfigured ? '<span class="pill-configured-dot" title="Sẵn sàng chạy Video"></span>' : ""}<span class="pill-label">${escapeHtml(vPill)}</span><span class="pill-chevron">▾</span>`;
     modelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       selectNode(node.id);
@@ -8779,11 +9050,12 @@ function videoNodeControls(node, card) {
     row.append(durPill, genAudioBtn);
   } else if (node.kind === "modify-video") {
     const modModel = node.videoModel || "MiniMax H3";
+    const modPill = friendlyModelPillLabel(modModel, "video");
     const modelPill = document.createElement("button");
     modelPill.type = "button";
     modelPill.className = "card-pill card-model-btn video-model-btn";
-    modelPill.title = "Model";
-    modelPill.innerHTML = `<span class="pill-label">${escapeHtml(modModel)}</span><span class="pill-chevron">▾</span>`;
+    modelPill.title = `Model Video: ${modModel}`;
+    modelPill.innerHTML = `<span class="pill-label">${escapeHtml(modPill)}</span><span class="pill-chevron">▾</span>`;
     modelPill.addEventListener("click", (e) => {
       e.stopPropagation();
       selectNode(node.id);
@@ -10774,8 +11046,10 @@ function variationsControls(node, card) {
   modelBtn.className = "card-pill card-model-btn variations-model-btn";
   modelBtn.setAttribute("aria-label", "Select model");
   const shownModel = node.presetLabel && !state.comfy.checkpoints.includes(node.model) ? node.presetLabel : displayModelName(node);
+  const shownPill = friendlyModelPillLabel(shownModel, "image");
   const shownConfigured = isModelConfigured(shownModel, "image");
-  modelBtn.innerHTML = `${shownConfigured ? '<span class="pill-configured-dot" title="Đã cấu hình API Key"></span>' : ""}<span class="pill-label">${escapeHtml(shownModel)}</span><span class="pill-chevron">▾</span>`;
+  modelBtn.title = shownModel !== shownPill ? `${shownPill} (${shownModel})` : shownPill;
+  modelBtn.innerHTML = `${shownConfigured ? '<span class="pill-configured-dot" title="Đã cấu hình API Key"></span>' : ""}<span class="pill-label">${escapeHtml(shownPill)}</span><span class="pill-chevron">▾</span>`;
   modelBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     selectNode(node.id);
@@ -12377,7 +12651,7 @@ function renderTaskInspector(node, definition, panel) {
           <button id="inspectorModelBtn" type="button" class="inspector-model-select-btn">
             <span class="model-configured-dot ${modelConfigured ? "is-configured" : ""}"></span>
             <span class="model-badge-icon">${modelBadgeSvg(badge)}</span>
-            <span class="model-title">${escapeHtml(shownModel)}</span>
+            <span class="model-title">${escapeHtml(friendlyModelPillLabel(shownModel, isVideoNode ? "video" : "image"))}</span>
             <span class="pill-chevron">▾</span>
           </button>
           <button id="inspectorAdvToggle" type="button" class="inspector-adv-btn ${state.showAdvancedInspector ? "active" : ""}" title="Advanced ComfyUI parameters" aria-label="Advanced ComfyUI parameters">${actionIcon("settings")}</button>

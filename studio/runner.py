@@ -104,6 +104,9 @@ _EXTERNAL_REF_PHRASE_RE = re.compile(
 _POSITIVE_NO_NEGATION_RE = re.compile(
     r"(?i),?\s*\bno\s+(?:text|watermarks?|signatures?|logos?)\b(?:\s*,\s*|\s+and\s+)?"
 )
+_REPLACE_SURROUNDINGS_RE = re.compile(
+    r"(?i)\breplace\s+[^.,;]{3,60}?\bsurroundings\s+with\s+(?:a|an)\s+"
+)
 _SDXL_NAME_RE = re.compile(r"(?:^|[_\-\s.])(sdxl|xl|illustrious|animagine|pony|juggernaut)(?:$|[_\-\s.\d])")
 
 ANIMAGINE_DEFAULT_NEGATIVE = (
@@ -124,6 +127,7 @@ def _strip_unwanted_clip_tokens(text):
     raw = _UNINSTALLED_CLIP_TOKENS_RE.sub(" ", raw)
     raw = _EXTERNAL_REF_PHRASE_RE.sub(" ", raw)
     raw = _POSITIVE_NO_NEGATION_RE.sub(" ", raw)
+    raw = _REPLACE_SURROUNDINGS_RE.sub("", raw)
     raw = re.sub(r"\s*,\s*,+", ", ", raw)
     raw = re.sub(r"[ \t]{2,}", " ", raw)
     return raw.strip(" ,;\r\n\t")
@@ -361,17 +365,17 @@ def _format_positive_and_negative(prompt_text, negative_text, sc):
     return pos, neg
 
 
-_ZONE_PREFIX = r"(?:(?:occup(?:y|ies)|positioned\s+(?:in|at|on)|placed\s+(?:in|at|on)|located\s+(?:in|at|on))\s+(?:the\s+)?|(?:in|on|at|from)\s+the\s+)"
+_ZONE_PREFIX = r"(?:(?<!toward\s)(?<!towards\s)(?<!facing\s)(?:occup(?:y|ies)|positioned\s+(?:in|at|on)|placed\s+(?:in|at|on)|located\s+(?:in|at|on)|stands?\s+(?:in|on|at)|sits?\s+(?:in|on|at)|lies?\s+(?:in|on|at))\s+(?:the\s+)?|(?<!toward\s)(?<!towards\s)(?<!facing\s)(?<!looking\s)\b(?:in|on|at|from|to)\s+the\s+|^)"
 _REGIONAL_ZONE_SPECS = (
-    ("bottom_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]left|lower[- ]left)|góc dưới bên trái|phía dưới bên trái"), {"x": 0.0, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
-    ("top_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]right|top[- ]right)|góc trên bên phải|phía trên bên phải"), {"x": 0.44, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
-    ("top_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]left|top[- ]left)|góc trên bên trái|phía trên bên trái"), {"x": 0.0, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
-    ("bottom_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]right|lower[- ]right)|góc dưới bên phải|phía dưới bên phải"), {"x": 0.44, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
-    ("left", re.compile(rf"(?i){_ZONE_PREFIX}left(?:\s+(?:side|portion|half))?|bên trái"), {"x": 0.0, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
-    ("right", re.compile(rf"(?i){_ZONE_PREFIX}right(?:\s+(?:side|portion|half))?|bên phải"), {"x": 0.45, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
+    ("bottom_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]left|lower[- ]left)(?:\s+(?:side|portion|half|corner))?|(?:ở\s+)?(?:góc\s+)?(?:dưới|phía dưới)\s+bên\s+trái"), {"x": 0.0, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("top_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]right|top[- ]right)(?:\s+(?:side|portion|half|corner))?|(?:ở\s+)?(?:góc\s+)?(?:trên|phía trên)\s+bên\s+phải"), {"x": 0.44, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("top_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]left|top[- ]left)(?:\s+(?:side|portion|half|corner))?|(?:ở\s+)?(?:góc\s+)?(?:trên|phía trên)\s+bên\s+trái"), {"x": 0.0, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("bottom_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]right|lower[- ]right)(?:\s+(?:side|portion|half|corner))?|(?:ở\s+)?(?:góc\s+)?(?:dưới|phía dưới)\s+bên\s+phải"), {"x": 0.44, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("left", re.compile(rf"(?i){_ZONE_PREFIX}left(?:\s+(?:side|portion|half))?(?:\s*[,:])?|(?:ở\s+)?bên\s+trái"), {"x": 0.0, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
+    ("right", re.compile(rf"(?i){_ZONE_PREFIX}right(?:\s+(?:side|portion|half))?(?:\s*[,:])?|(?:ở\s+)?bên\s+phải"), {"x": 0.45, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
 )
 _GLOBAL_SENTENCE_START_RE = re.compile(
-    r"(?i)^(?:the\s+two\s+characters|both\s+characters|their\s+fingertips|replace\s+|soft\s+\w+\s+sunlight|detailed\s+)"
+    r"(?i)^(?:the\s+two\s+characters|both\s+characters|their\s+fingertips|replace\s+|soft\s+\w+\s+sunlight|detailed\s+|hai\s+nhân\s+vật|cả\s+hai|khung\s+cảnh|bối\s+cảnh)"
 )
 _SKIP_NARRATIVE_RE = re.compile(
     r"(?i)^(?:the\s+comedy\s+comes\s+from|her\s+expression\s+suggests|his\s+expression\s+suggests|exaggerate\s+the|as\s+though\s+the\s+fate)"
@@ -382,7 +386,7 @@ def build_regional_clip_spec(raw_prompt, sc):
     if sc["family"] not in ("sdxl", "sd15") or sc["guidance_node"] is not None:
         return None
     cleaned = _strip_unwanted_clip_tokens(raw_prompt)
-    if len(cleaned.split()) < 45:
+    if len(cleaned.split()) < 18:
         return None
 
     global_sentences = []
@@ -439,10 +443,10 @@ def build_regional_clip_spec(raw_prompt, sc):
                 reg_raw = re.sub(rf"(?i)\b{re.escape(tok)}\b", "", reg_raw)
         reg_raw = re.sub(r"\s{2,}", " ", reg_raw).strip(" ,")
         low = reg_raw.lower()
-        if re.search(r"\b(?:she|her|hers|girl|woman|female)\b", low):
+        if re.search(r"\b(?:she|her|hers|girl|woman|female)\b|cô gái|thiếu nữ|phụ nữ|nữ|cô ấy|nàng", low):
             subj_tag = "1girl"
             girl_count += 1
-        elif re.search(r"\b(?:he|him|his|boy|man|male)\b", low):
+        elif re.search(r"\b(?:he|him|his|boy|man|male)\b|chàng trai|đàn ông|cậu bé|anh ấy|nam", low):
             subj_tag = "1boy"
             boy_count += 1
         else:

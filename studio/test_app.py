@@ -1939,6 +1939,56 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(workflow["5"]["inputs"]["positive"], ["15", 0])
 
+    async def test_diverse_prompts_english_vietnamese_and_single_subject(self):
+        from studio.runner import _sampler_config_for_snapshot, build_regional_clip_spec, text_image_prompt
+
+        sc_sdxl = _sampler_config_for_snapshot({"model": "animagine-xl-3.1.safetensors", "steps": 20, "cfg": 7.0})
+
+        # 1. Concise English 2-character left/right prompt (22 words)
+        concise_en = (
+            "On the left, a young woman with silver hair in a red scarf holds a coffee cup. "
+            "On the right, a young man in a navy coat reads a book in a warm cafe."
+        )
+        wf_en = text_image_prompt(
+            {"prompt": concise_en, "negative": "", "model": "animagine-xl-3.1.safetensors", "width": 1376, "height": 768, "steps": 20, "cfg": 7.0, "seed": 11},
+            "run_en",
+        )
+        self.assertTrue(wf_en["2"]["inputs"]["text"].startswith("1girl, 1boy, 2people, wide shot"))
+        areas_en = [n for n in wf_en.values() if n.get("class_type") == "ConditioningSetAreaPercentage"]
+        self.assertEqual(len(areas_en), 2)
+        self.assertIn("silver hair", wf_en[areas_en[0]["inputs"]["conditioning"][0]]["inputs"]["text"].lower())
+        self.assertIn("navy coat", wf_en[areas_en[1]["inputs"]["conditioning"][0]]["inputs"]["text"].lower())
+
+        # 2. Vietnamese 2-character left/right prompt with cultural CLIP hints
+        vi_prompt = (
+            "Ở bên trái, một cô gái mặc áo dài trắng mỉm cười nhẹ nhàng dưới ánh hoàng hôn. "
+            "Ở bên phải, một chàng trai mặc vest đen đứng cạnh chiếc ô tô hiện đại."
+        )
+        wf_vi = text_image_prompt(
+            {"prompt": vi_prompt, "negative": "", "model": "animagine-xl-3.1.safetensors", "width": 1376, "height": 768, "steps": 20, "cfg": 7.0, "seed": 22},
+            "run_vi",
+        )
+        self.assertTrue(wf_vi["2"]["inputs"]["text"].startswith("1girl, 1boy, 2people, wide shot"))
+        areas_vi = [n for n in wf_vi.values() if n.get("class_type") == "ConditioningSetAreaPercentage"]
+        self.assertEqual(len(areas_vi), 2)
+        left_vi = wf_vi[areas_vi[0]["inputs"]["conditioning"][0]]["inputs"]["text"].lower()
+        right_vi = wf_vi[areas_vi[1]["inputs"]["conditioning"][0]]["inputs"]["text"].lower()
+        self.assertIn("traditional vietnamese ao dai dress", left_vi)
+        self.assertIn("modern car", right_vi)
+
+        # 3. Single-subject / landscape prompt -> must NOT trigger regional multi-box splitting
+        single_prompt = "A cozy wooden cabin in a snowy pine forest under vibrant aurora lights, warm glowing windows, cinematic wide angle"
+        self.assertIsNone(build_regional_clip_spec(single_prompt, sc_sdxl))
+        wf_single = text_image_prompt(
+            {"prompt": single_prompt, "negative": "", "model": "animagine-xl-3.1.safetensors", "width": 1376, "height": 768, "steps": 20, "cfg": 7.0, "seed": 33},
+            "run_single",
+        )
+        areas_single = [n for n in wf_single.values() if n.get("class_type") == "ConditioningSetAreaPercentage"]
+        self.assertEqual(len(areas_single), 0)
+        self.assertEqual(wf_single["5"]["inputs"]["positive"], ["2", 0])
+        self.assertIn("masterpiece, best quality", wf_single["2"]["inputs"]["text"])
+        self.assertIn("worst quality", wf_single["3"]["inputs"]["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

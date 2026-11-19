@@ -2233,6 +2233,45 @@ kbd {
   white-space: nowrap;
 }
 
+.model-option-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.model-sub-filename {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #8d93a1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-tag-role {
+  font-size: 10px;
+  font-weight: 650;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+}
+
+.model-tag-role.is-video {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+}
+
+.model-tag-role.is-local {
+  background: rgba(16, 185, 129, 0.16);
+  color: #6ee7b7;
+}
+
 .model-badge-icon {
   width: 26px;
   height: 26px;
