@@ -101,6 +101,9 @@ _UNINSTALLED_CLIP_TOKENS_RE = re.compile(
 _EXTERNAL_REF_PHRASE_RE = re.compile(
     r"(?i)\b(?:the\s+(?:girl|boy|woman|man|character|person)\s+)?(?:from|in)\s+(?:the\s+)?(?:1st|2nd|3rd|first|second|third)\s+image\b[\s,]*"
 )
+_POSITIVE_NO_NEGATION_RE = re.compile(
+    r"(?i),?\s*\bno\s+(?:text|watermarks?|signatures?|logos?)\b(?:\s*,\s*|\s+and\s+)?"
+)
 _SDXL_NAME_RE = re.compile(r"(?:^|[_\-\s.])(sdxl|xl|illustrious|animagine|pony|juggernaut)(?:$|[_\-\s.\d])")
 
 ANIMAGINE_DEFAULT_NEGATIVE = (
@@ -114,14 +117,21 @@ GENERAL_DEFAULT_NEGATIVE = (
 )
 
 
-def normalize_clip_prompt(text):
+def _strip_unwanted_clip_tokens(text):
     raw = str(text or "").strip()
     if not raw:
         return raw
     raw = _UNINSTALLED_CLIP_TOKENS_RE.sub(" ", raw)
     raw = _EXTERNAL_REF_PHRASE_RE.sub(" ", raw)
+    raw = _POSITIVE_NO_NEGATION_RE.sub(" ", raw)
     raw = re.sub(r"\s*,\s*,+", ", ", raw)
-    raw = re.sub(r"\s{2,}", " ", raw).strip(" ,;\r\n\t")
+    raw = re.sub(r"[ \t]{2,}", " ", raw)
+    return raw.strip(" ,;\r\n\t")
+
+
+def normalize_clip_prompt(text):
+    raw = _strip_unwanted_clip_tokens(text)
+    raw = re.sub(r"\s+", " ", raw).strip(" ,;\r\n\t")
     if not raw:
         return raw
     has_non_ascii = any(ord(ch) >= 128 for ch in raw)
@@ -351,13 +361,161 @@ def _format_positive_and_negative(prompt_text, negative_text, sc):
     return pos, neg
 
 
+_ZONE_PREFIX = r"(?:(?:occup(?:y|ies)|positioned\s+(?:in|at|on)|placed\s+(?:in|at|on)|located\s+(?:in|at|on))\s+(?:the\s+)?|(?:in|on|at|from)\s+the\s+)"
+_REGIONAL_ZONE_SPECS = (
+    ("bottom_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]left|lower[- ]left)|góc dưới bên trái|phía dưới bên trái"), {"x": 0.0, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("top_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]right|top[- ]right)|góc trên bên phải|phía trên bên phải"), {"x": 0.44, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("top_left", re.compile(rf"(?i){_ZONE_PREFIX}(?:upper[- ]left|top[- ]left)|góc trên bên trái|phía trên bên trái"), {"x": 0.0, "y": 0.0, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("bottom_right", re.compile(rf"(?i){_ZONE_PREFIX}(?:bottom[- ]right|lower[- ]right)|góc dưới bên phải|phía dưới bên phải"), {"x": 0.44, "y": 0.15, "width": 0.56, "height": 0.85, "strength": 1.15}),
+    ("left", re.compile(rf"(?i){_ZONE_PREFIX}left(?:\s+(?:side|portion|half))?|bên trái"), {"x": 0.0, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
+    ("right", re.compile(rf"(?i){_ZONE_PREFIX}right(?:\s+(?:side|portion|half))?|bên phải"), {"x": 0.45, "y": 0.0, "width": 0.55, "height": 1.0, "strength": 1.12}),
+)
+_GLOBAL_SENTENCE_START_RE = re.compile(
+    r"(?i)^(?:the\s+two\s+characters|both\s+characters|their\s+fingertips|replace\s+|soft\s+\w+\s+sunlight|detailed\s+)"
+)
+_SKIP_NARRATIVE_RE = re.compile(
+    r"(?i)^(?:the\s+comedy\s+comes\s+from|her\s+expression\s+suggests|his\s+expression\s+suggests|exaggerate\s+the|as\s+though\s+the\s+fate)"
+)
+
+
+def build_regional_clip_spec(raw_prompt, sc):
+    if sc["family"] not in ("sdxl", "sd15") or sc["guidance_node"] is not None:
+        return None
+    cleaned = _strip_unwanted_clip_tokens(raw_prompt)
+    if len(cleaned.split()) < 45:
+        return None
+
+    global_sentences = []
+    zone_buckets = {}
+    zone_names = {}
+    zone_order = []
+
+    for para in re.split(r"\r?\n+", cleaned):
+        para = para.strip()
+        if not para:
+            continue
+        current_zone = None
+        for sent in re.split(r"(?<=[.!?])\s+", para):
+            sent = sent.strip()
+            if not sent or _SKIP_NARRATIVE_RE.match(sent):
+                continue
+            matched_zones = [z for z, pat, _ in _REGIONAL_ZONE_SPECS if pat.search(sent)]
+            if len(matched_zones) >= 2 or _GLOBAL_SENTENCE_START_RE.match(sent):
+                current_zone = None
+                sent_clean = re.sub(r"(?i)^replace\s+[^.]*?\bsurroundings\s+with\s+(?:a|an)\s+", "", sent)
+                sent_clean = re.sub(r"(?i)\bbut\s+replacing\s+[^,]+?\s+with\s+(?:the\s+extremely\s+important\s+act\s+of\s+)?", "sharing ", sent_clean)
+                global_sentences.append(sent_clean.strip())
+            elif len(matched_zones) == 1:
+                current_zone = matched_zones[0]
+                if current_zone not in zone_buckets:
+                    zone_buckets[current_zone] = []
+                    zone_order.append(current_zone)
+                name_m = re.match(r"^([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\b", sent)
+                if name_m and name_m.group(1).lower() not in ("with", "from", "while", "after", "before", "under"):
+                    zone_names[current_zone] = name_m.group(1)
+                zone_buckets[current_zone].append(sent)
+            elif current_zone:
+                zone_buckets[current_zone].append(sent)
+            else:
+                sent_clean = re.sub(r"(?i)\bbut\s+replacing\s+[^,]+?\s+with\s+(?:the\s+extremely\s+important\s+act\s+of\s+)?", "", sent)
+                global_sentences.append(sent_clean.strip())
+
+    if len(zone_order) < 2:
+        return None
+
+    spec_lookup = {z: coords for z, _, coords in _REGIONAL_ZONE_SPECS}
+    regions = []
+    girl_count = 0
+    boy_count = 0
+
+    for z in zone_order:
+        reg_raw = " ".join(zone_buckets[z])
+        for other_z, full_name in zone_names.items():
+            if other_z == z or not full_name:
+                continue
+            tokens = [full_name] + [p for p in full_name.split() if len(p) >= 3]
+            for tok in tokens:
+                reg_raw = re.sub(rf"(?i)\b{re.escape(tok)}(?:'s|’s)\b", "the", reg_raw)
+                reg_raw = re.sub(rf"(?i)\b{re.escape(tok)}\b", "", reg_raw)
+        reg_raw = re.sub(r"\s{2,}", " ", reg_raw).strip(" ,")
+        low = reg_raw.lower()
+        if re.search(r"\b(?:she|her|hers|girl|woman|female)\b", low):
+            subj_tag = "1girl"
+            girl_count += 1
+        elif re.search(r"\b(?:he|him|his|boy|man|male)\b", low):
+            subj_tag = "1boy"
+            boy_count += 1
+        else:
+            subj_tag = "1person"
+        reg_norm = normalize_clip_prompt(f"{subj_tag}, {reg_raw}")
+        if sc["quality_suffix"] and "best quality" not in reg_norm.lower():
+            reg_norm = f"{reg_norm}, {sc['quality_suffix']}"
+        regions.append({"zone": z, "prompt": reg_norm, **spec_lookup[z]})
+
+    if girl_count >= 2 and boy_count == 0:
+        count_prefix = f"{girl_count}girls, multiple girls, wide shot"
+    elif boy_count >= 2 and girl_count == 0:
+        count_prefix = f"{boy_count}boys, multiple boys, wide shot"
+    elif girl_count >= 1 and boy_count >= 1:
+        count_prefix = f"{girl_count}girl, {boy_count}boy, {girl_count + boy_count}people, wide shot"
+    else:
+        count_prefix = f"{len(regions)}people, wide shot"
+
+    global_body = " ".join(s for s in global_sentences if s).strip()
+    global_norm = normalize_clip_prompt(f"{count_prefix}, {global_body}" if global_body else count_prefix)
+    if sc["quality_suffix"] and "best quality" not in global_norm.lower():
+        global_norm = f"{global_norm}, {sc['quality_suffix']}"
+
+    return {"globalPrompt": global_norm, "regions": regions}
+
+
+def _apply_regional_conditioning(graph, regional):
+    pos_ref = ["2", 0]
+    next_id = 10
+    for reg in regional["regions"]:
+        enc_id = str(next_id)
+        area_id = str(next_id + 1)
+        comb_id = str(next_id + 2)
+        graph[enc_id] = {"class_type": "CLIPTextEncode", "inputs": {"text": reg["prompt"], "clip": ["1", 1]}}
+        graph[area_id] = {
+            "class_type": "ConditioningSetAreaPercentage",
+            "inputs": {
+                "conditioning": [enc_id, 0],
+                "width": reg["width"],
+                "height": reg["height"],
+                "x": reg["x"],
+                "y": reg["y"],
+                "strength": reg["strength"],
+            },
+        }
+        graph[comb_id] = {
+            "class_type": "ConditioningCombine",
+            "inputs": {"conditioning_1": pos_ref, "conditioning_2": [area_id, 0]},
+        }
+        pos_ref = [comb_id, 0]
+        next_id += 3
+    return pos_ref
+
+
+def _resolve_prompt_conditioning(prompt_text, negative_text, sc):
+    regional = build_regional_clip_spec(prompt_text, sc)
+    if regional is not None:
+        pos_text = regional["globalPrompt"]
+        neg_text = str(negative_text or "").strip() or sc["default_negative"]
+        if neg_text and "solo" not in neg_text.lower():
+            neg_text = f"{neg_text}, solo"
+        return pos_text, neg_text, regional
+    pos_text, neg_text = _format_positive_and_negative(prompt_text, negative_text, sc)
+    return pos_text, neg_text, None
+
+
 def text_image_prompt(snapshot, run_id):
     latent_w, latent_h = snapshot["width"], snapshot["height"]
     max_edge = int(snapshot.get("maxLatentEdge") or 768)
     if snapshot.get("vramSafeLatent"):
         latent_w, latent_h = vram_safe_latent_dims(latent_w, latent_h, max_edge=max_edge)
     sc = _sampler_config_for_snapshot(snapshot)
-    pos_text, neg_text = _format_positive_and_negative(snapshot["prompt"], snapshot["negative"], sc)
+    pos_text, neg_text, regional = _resolve_prompt_conditioning(snapshot["prompt"], snapshot["negative"], sc)
     positive_ref = ["9", 0] if sc["guidance_node"] is not None else ["2", 0]
     graph = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": snapshot["model"]}},
@@ -370,12 +528,14 @@ def text_image_prompt(snapshot, run_id):
     }
     if sc["guidance_node"] is not None:
         graph["9"] = sc["guidance_node"]
+    elif regional is not None:
+        graph["5"]["inputs"]["positive"] = _apply_regional_conditioning(graph, regional)
     return graph
 
 
 def image_image_prompt(snapshot, run_id, image_name):
     sc = _sampler_config_for_snapshot(snapshot)
-    pos_text, neg_text = _format_positive_and_negative(snapshot.get("prompt", ""), snapshot.get("negative", ""), sc)
+    pos_text, neg_text, regional = _resolve_prompt_conditioning(snapshot.get("prompt", ""), snapshot.get("negative", ""), sc)
     positive_ref = ["9", 0] if sc["guidance_node"] is not None else ["2", 0]
     graph = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": snapshot["model"]}},
@@ -389,6 +549,8 @@ def image_image_prompt(snapshot, run_id, image_name):
     }
     if sc["guidance_node"] is not None:
         graph["9"] = sc["guidance_node"]
+    elif regional is not None:
+        graph["6"]["inputs"]["positive"] = _apply_regional_conditioning(graph, regional)
     return graph
 
 

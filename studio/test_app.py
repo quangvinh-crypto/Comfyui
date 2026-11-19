@@ -1864,6 +1864,81 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ["--disable-auto-launch", "--lowvram", "--fp32-vae", "--force-upcast-attention"],
             )
 
+    async def test_regional_conditioning_exact_430_word_kaela_kronii_prompt(self):
+        self.mock_system_stats = {
+            "devices": [{"name": "cuda:0 RTX 3060", "type": "cuda", "vram_total": 12288 * 1024 * 1024, "vram_free": 11000 * 1024 * 1024}]
+        }
+        self.mock_checkpoints = ["animagine-xl-3.1.safetensors"]
+        long_prompt = (
+            "lazypos\n"
+            "A humorous modern anime-style parody of Michelangelo's The Creation of Adam, recreating its iconic diagonal composition and almost-touching fingertips, "
+            "but replacing the divine creation of humanity with the extremely important act of sharing snacks. Kaela Kovalskia, the girl from 1st image, occupies the "
+            "bottom-left portion of the composition, lying comfortably on a soft living-room carpet with her upper body slightly raised. She has long blonde hair, vivid "
+            "crimson-red eyes, and a relaxed, slightly smug smile. She wears a comfortable oversized dark hoodie, loose trousers, and cozy socks. With one arm extended "
+            "dramatically upward and toward the upper-right corner, she offers a large, crinkly bag of potato chips, holding it carefully by the top opening as though "
+            "presenting a priceless treasure. Her other arm casually supports her body against the carpet.\n"
+            "Ouro Kronii, the girl from 2nd image, occupies the upper-right portion of the composition, reclining comfortably across a large sofa with several soft cushions. "
+            "Her blue hair drapes over the sofa, and she wears a modest oversized blue sweater, comfortable lounge pants, and socks. With an exaggeratedly elegant yet "
+            "desperately determined expression, she leans far over the edge of the sofa, stretching one arm downward toward Kaela's snack bag. Her fingertips are just "
+            "about to reach the bag, while her other hand grips the sofa cushion for support. Her expression suggests that obtaining these snacks is the most important "
+            "mission of her existence.\n"
+            "The two characters form the same recognizable diagonal arrangement as the original fresco: Kaela reaching upward from the lower-left while Kronii extends "
+            "downward from the upper-right, with their hands and the snack bag becoming the central focal point. Their fingertips nearly touch the snack bag in an "
+            "unnecessarily dramatic moment of anticipation. Replace Michelangelo's heavenly clouds and divine surroundings with a cozy modern living room, featuring a large "
+            "fabric sofa, fluffy carpet, scattered cushions, a low coffee table, a television in the background, and a few empty snack wrappers. Soft afternoon sunlight enters "
+            "through the window, creating warm atmospheric lighting across the room.\n"
+            "The comedy comes from treating an ordinary snack-sharing moment with the monumental importance, dramatic gestures, and divine symbolism of a Renaissance "
+            "masterpiece. Exaggerate the dramatic reach and the tiny distance between Kronii's fingers and the snack bag, as though the fate of the universe depends on whether "
+            "she gets a chip. Detailed modern anime character illustration, expressive facial reactions, natural fabric folds, carefully composed anatomy, rich painterly "
+            "background, warm cinematic lighting, playful slice-of-life atmosphere, wide horizontal composition, no text, no watermark."
+        )
+        project = await (await self.client.post("/studio/api/projects", json={"title": "Kaela & Kronii Regional"})).json()
+        graph = {
+            "nodes": [
+                {"id": "txt_long", "kind": "text", "x": 0, "y": 0, "text": long_prompt},
+                {"id": "gen_xl", "kind": "text-image", "x": 360, "y": 0, "model": "Local GPU (VRAM)", "width": 1376, "height": 768},
+            ],
+            "edges": [{"id": "e_long", "source": "txt_long", "sourcePort": "text", "target": "gen_xl", "targetPort": "prompt"}],
+        }
+        await self.client.put(f"/studio/api/projects/{project['id']}/graph", json={"version": 1, "graph": graph})
+        res = await (await self.client.post("/studio/api/runs", json={"projectId": project["id"], "nodeId": "gen_xl", "version": 2})).json()
+        workflow = next(s["prompt"] for s in self.submitted if s["prompt_id"] == res["id"])
+
+        global_text = workflow["2"]["inputs"]["text"]
+        self.assertTrue(global_text.startswith("2girls, multiple girls, wide shot"))
+        self.assertNotIn("heavenly clouds", global_text.lower())
+        self.assertNotIn("no watermark", global_text.lower())
+        self.assertNotIn("lazypos", global_text.lower())
+        self.assertNotIn("from 1st image", global_text.lower())
+        self.assertIn("solo", workflow["3"]["inputs"]["text"].lower())
+
+        area_nodes = [n for n in workflow.values() if n.get("class_type") == "ConditioningSetAreaPercentage"]
+        comb_nodes = [n for n in workflow.values() if n.get("class_type") == "ConditioningCombine"]
+        self.assertEqual(len(area_nodes), 2)
+        self.assertEqual(len(comb_nodes), 2)
+
+        bl_text = workflow[area_nodes[0]["inputs"]["conditioning"][0]]["inputs"]["text"]
+        self.assertTrue(bl_text.startswith("1girl,"))
+        self.assertIn("kaela kovalskia", bl_text.lower())
+        self.assertIn("long blonde hair", bl_text.lower())
+        self.assertIn("crimson-red eyes", bl_text.lower())
+        self.assertIn("dark hoodie", bl_text.lower())
+        self.assertIn("potato chips", bl_text.lower())
+        self.assertNotIn("ouro kronii", bl_text.lower())
+        self.assertNotIn("blue hair", bl_text.lower())
+        self.assertEqual((area_nodes[0]["inputs"]["x"], area_nodes[0]["inputs"]["y"]), (0.0, 0.15))
+
+        tr_text = workflow[area_nodes[1]["inputs"]["conditioning"][0]]["inputs"]["text"]
+        self.assertTrue(tr_text.startswith("1girl,"))
+        self.assertIn("ouro kronii", tr_text.lower())
+        self.assertIn("blue hair", tr_text.lower())
+        self.assertIn("blue sweater", tr_text.lower())
+        self.assertNotIn("kaela", tr_text.lower())
+        self.assertNotIn("blonde hair", tr_text.lower())
+        self.assertEqual((area_nodes[1]["inputs"]["x"], area_nodes[1]["inputs"]["y"]), (0.44, 0.0))
+
+        self.assertEqual(workflow["5"]["inputs"]["positive"], ["15", 0])
+
 
 if __name__ == "__main__":
     unittest.main()
