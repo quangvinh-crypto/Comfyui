@@ -80,7 +80,7 @@ Toàn bộ thư viện bên thứ ba (`venv/`, `node_modules/`), dữ liệu ng�
 > **Lưu ý cấu hình GPU & VRAM:**
 > - Chạy `.\studio doctor` để kiểm tra `torch.cuda.is_available()`, phiên bản PyTorch CUDA và phân loại model trong `models/checkpoints`.
 > - Nếu `venv` đang cài nhầm `torch+cpu`, `.\studio` sẽ cảnh báo và tự lùi về `--cpu` để ComfyUI Worker vẫn khởi động được thay vì crash; cài lại bản CUDA (`--index-url https://download.pytorch.org/whl/cu126`) để chạy bằng GPU.
-> - Launcher tự gắn `--lowvram --fp32-vae --force-upcast-attention` cho GPU `<= 6 GB VRAM`, và `--normalvram` cho GPU `8–12 GB VRAM`.
+> - Launcher tự gắn `--lowvram --fp32-vae --force-upcast-attention` cho GPU `<= 6 GB VRAM`, và giữ chế độ DynamicVRAM mặc định của ComfyUI cho GPU `8–12 GB+ VRAM`.
 > - Máy `12 GB VRAM` nên dùng checkpoint All-in-One **Flux.1 Schnell FP8** (`flux1-schnell-fp8.safetensors`) hoặc **SDXL / Animagine XL 3.1** thay cho SD 1.5 (`77 token`) để bám sát prompt dài và bố cục đa nhân vật.
 
 ---

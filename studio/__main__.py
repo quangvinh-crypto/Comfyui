@@ -97,8 +97,6 @@ def detect_comfy_worker_flags():
     gpu_name = (env["torchGpuName"] or env["hardwareGpuName"] or "").lower()
     if vram_mb <= 6500 or "1650" in gpu_name or "1660" in gpu_name:
         flags.extend(["--lowvram", "--fp32-vae", "--force-upcast-attention"])
-    elif vram_mb <= 14500:
-        flags.append("--normalvram")
     return flags
 
 
@@ -267,7 +265,7 @@ def run_doctor(data_dir, comfy_url):
         print(r"    .\venv\Scripts\python.exe -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126")
     elif env["torchCudaAvailable"]:
         vram_mb = env["torchVramMB"] or env["hardwareVramMB"]
-        tier = "12GB+ VRAM (--normalvram)" if vram_mb >= 10000 else ("8GB VRAM (--normalvram)" if vram_mb > 6500 else "<=6GB VRAM (--lowvram)")
+        tier = "12GB+ VRAM (DynamicVRAM)" if vram_mb >= 10000 else ("8GB VRAM (DynamicVRAM)" if vram_mb > 6500 else "<=6GB VRAM (--lowvram)")
         print(f"- Chế độ ComfyUI Worker: Sẵn sàng GPU CUDA [{tier}]")
 
     ckpt_dir = ROOT_DIR / "models" / "checkpoints"

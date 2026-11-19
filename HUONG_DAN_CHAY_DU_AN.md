@@ -30,7 +30,7 @@ Trong Terminal, chạy duy nhất lệnh:
 
 Lệnh này tự động khởi chạy đồng thời:
 1. **Giao diện Studio** tại: <http://127.0.0.1:8787> (hoặc <http://127.0.0.1:8787/studio/>)
-2. **ComfyUI GPU Worker** chạy ngầm tại: <http://127.0.0.1:8188/> (tự động nhận diện `<=6GB VRAM` dùng `--lowvram --fp32-vae --force-upcast-attention`, `8–12GB VRAM` dùng `--normalvram`, hoặc fallback `--cpu` nếu PyTorch thiếu CUDA).
+2. **ComfyUI GPU Worker** chạy ngầm tại: <http://127.0.0.1:8188/> (tự động nhận diện `<=6GB VRAM` dùng `--lowvram --fp32-vae --force-upcast-attention`, `8–12GB+ VRAM` chạy DynamicVRAM mặc định, hoặc fallback `--cpu` nếu PyTorch thiếu CUDA).
 
 - **Tự động cập nhật (Hot-reload)**: Khi sửa các tệp giao diện (`studio/web/*`) hoặc mã nguồn Python (`studio/*.py`), Studio sẽ tự động cập nhật trong khi giữ nguyên tiến trình ComfyUI GPU Worker đang chạy. Bạn **không cần tắt/bật lại Terminal**, chỉ cần bấm **`F5`** tải lại trang trên trình duyệt.
 - Nhấn `Ctrl+C` trong Terminal khi muốn dừng hẳn cả Studio và ComfyUI Worker.

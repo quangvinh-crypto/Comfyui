@@ -98,7 +98,20 @@ VI_ASCII_CLIP_HINTS = (
 _UNINSTALLED_CLIP_TOKENS_RE = re.compile(
     r"(?i)(?<!embedding:)(?<!\w)(?:lazypos|lazyneg|easynegative|badhandv4|verybadimagenegative_v1\.3|ng_deepnegative_v1_75t)(?!\w)[\s,;]*"
 )
+_EXTERNAL_REF_PHRASE_RE = re.compile(
+    r"(?i)\b(?:the\s+(?:girl|boy|woman|man|character|person)\s+)?(?:from|in)\s+(?:the\s+)?(?:1st|2nd|3rd|first|second|third)\s+image\b[\s,]*"
+)
 _SDXL_NAME_RE = re.compile(r"(?:^|[_\-\s.])(sdxl|xl|illustrious|animagine|pony|juggernaut)(?:$|[_\-\s.\d])")
+
+ANIMAGINE_DEFAULT_NEGATIVE = (
+    "nsfw, lowres, (bad), text, error, fewer, extra, missing, worst quality, jpeg artifacts, "
+    "low quality, watermark, unfinished, displeasing, oldest, early, chromatic aberration, "
+    "signature, extra digits, artistic error, username, scan, [abstract]"
+)
+GENERAL_DEFAULT_NEGATIVE = (
+    "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, "
+    "cropped, worst quality, low quality, jpeg artifacts, watermark, blurry"
+)
 
 
 def normalize_clip_prompt(text):
@@ -106,6 +119,8 @@ def normalize_clip_prompt(text):
     if not raw:
         return raw
     raw = _UNINSTALLED_CLIP_TOKENS_RE.sub(" ", raw)
+    raw = _EXTERNAL_REF_PHRASE_RE.sub(" ", raw)
+    raw = re.sub(r"\s*,\s*,+", ", ", raw)
     raw = re.sub(r"\s{2,}", " ", raw).strip(" ,;\r\n\t")
     if not raw:
         return raw
@@ -270,7 +285,10 @@ class ComfyClient:
 
 
 def _sampler_config_for_snapshot(snapshot):
-    family = snapshot.get("checkpointFamily") or infer_checkpoint_family(snapshot.get("model", ""))
+    model_name = str(snapshot.get("model", ""))
+    stem = Path(model_name).stem.lower()
+    family = snapshot.get("checkpointFamily") or infer_checkpoint_family(model_name)
+    is_anime_xl = any(tok in stem for tok in ("animagine", "illustrious", "pony", "noobai", "kohaku-xl"))
     raw_steps = int(snapshot.get("steps", 20))
     raw_cfg = float(snapshot.get("cfg", 7.0))
     sampler_name = "euler"
@@ -278,6 +296,8 @@ def _sampler_config_for_snapshot(snapshot):
     steps = raw_steps
     cfg = raw_cfg
     guidance_node = None
+    quality_suffix = ""
+    default_negative = ""
 
     if family == "flux_schnell":
         sampler_name = "euler"
@@ -291,15 +311,25 @@ def _sampler_config_for_snapshot(snapshot):
         cfg = 1.0
         steps = raw_steps
         guidance_node = {"class_type": "FluxGuidance", "inputs": {"conditioning": ["2", 0], "guidance": 3.5}}
+    elif family == "sdxl" and is_anime_xl:
+        sampler_name = "euler_ancestral"
+        scheduler = "normal"
+        cfg = 6.0 if raw_cfg == 7.0 else raw_cfg
+        steps = max(raw_steps, 28) if raw_steps == 20 else raw_steps
+        quality_suffix = "masterpiece, best quality, very aesthetic, absurdres"
+        default_negative = ANIMAGINE_DEFAULT_NEGATIVE
     elif family == "sdxl":
         sampler_name = "dpmpp_2m"
         scheduler = "karras"
         cfg = min(raw_cfg, 6.5) if raw_cfg == 7.0 else raw_cfg
         steps = max(raw_steps, 25) if raw_steps == 20 else raw_steps
-    elif snapshot.get("model") != "test.safetensors":
+        quality_suffix = "masterpiece, best quality, highres"
+        default_negative = GENERAL_DEFAULT_NEGATIVE
+    elif model_name != "test.safetensors":
         sampler_name = "dpmpp_2m"
         scheduler = "karras"
         steps = max(raw_steps, 25) if raw_steps == 20 else raw_steps
+        default_negative = GENERAL_DEFAULT_NEGATIVE
 
     return {
         "family": family,
@@ -308,7 +338,17 @@ def _sampler_config_for_snapshot(snapshot):
         "steps": steps,
         "cfg": cfg,
         "guidance_node": guidance_node,
+        "quality_suffix": quality_suffix,
+        "default_negative": default_negative,
     }
+
+
+def _format_positive_and_negative(prompt_text, negative_text, sc):
+    pos = normalize_clip_prompt(prompt_text)
+    if sc["quality_suffix"] and pos and "best quality" not in pos.lower():
+        pos = f"{pos}, {sc['quality_suffix']}"
+    neg = str(negative_text or "").strip() or sc["default_negative"]
+    return pos, neg
 
 
 def text_image_prompt(snapshot, run_id):
@@ -317,11 +357,12 @@ def text_image_prompt(snapshot, run_id):
     if snapshot.get("vramSafeLatent"):
         latent_w, latent_h = vram_safe_latent_dims(latent_w, latent_h, max_edge=max_edge)
     sc = _sampler_config_for_snapshot(snapshot)
+    pos_text, neg_text = _format_positive_and_negative(snapshot["prompt"], snapshot["negative"], sc)
     positive_ref = ["9", 0] if sc["guidance_node"] is not None else ["2", 0]
     graph = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": snapshot["model"]}},
-        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": normalize_clip_prompt(snapshot["prompt"]), "clip": ["1", 1]}},
-        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": snapshot["negative"], "clip": ["1", 1]}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": pos_text, "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": neg_text, "clip": ["1", 1]}},
         "4": {"class_type": "EmptyLatentImage", "inputs": {"width": latent_w, "height": latent_h, "batch_size": 1}},
         "5": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": positive_ref, "negative": ["3", 0], "latent_image": ["4", 0], "seed": snapshot["seed"], "steps": sc["steps"], "cfg": sc["cfg"], "sampler_name": sc["sampler_name"], "scheduler": sc["scheduler"], "denoise": 1.0}},
         "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
@@ -334,11 +375,12 @@ def text_image_prompt(snapshot, run_id):
 
 def image_image_prompt(snapshot, run_id, image_name):
     sc = _sampler_config_for_snapshot(snapshot)
+    pos_text, neg_text = _format_positive_and_negative(snapshot.get("prompt", ""), snapshot.get("negative", ""), sc)
     positive_ref = ["9", 0] if sc["guidance_node"] is not None else ["2", 0]
     graph = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": snapshot["model"]}},
-        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": normalize_clip_prompt(snapshot.get("prompt", "")), "clip": ["1", 1]}},
-        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": snapshot.get("negative", ""), "clip": ["1", 1]}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": pos_text, "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": neg_text, "clip": ["1", 1]}},
         "4": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "5": {"class_type": "VAEEncode", "inputs": {"pixels": ["4", 0], "vae": ["1", 2]}},
         "6": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": positive_ref, "negative": ["3", 0], "latent_image": ["5", 0], "seed": snapshot["seed"], "steps": sc["steps"], "cfg": sc["cfg"], "sampler_name": sc["sampler_name"], "scheduler": sc["scheduler"], "denoise": snapshot.get("denoise", 0.75)}},

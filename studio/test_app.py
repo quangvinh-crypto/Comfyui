@@ -16,7 +16,7 @@ from studio.app import create_app
 class StudioApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.data_dir = tempfile.TemporaryDirectory()
-        self.client = TestClient(TestServer(create_app(self.data_dir.name)))
+        self.client = TestClient(TestServer(create_app(self.data_dir.name, "http://127.0.0.1:9")))
         await self.client.start_server()
 
     async def asyncTearDown(self):
@@ -42,7 +42,7 @@ class StudioApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["version"], 2)
 
         await self.client.close()
-        self.client = TestClient(TestServer(create_app(self.data_dir.name)))
+        self.client = TestClient(TestServer(create_app(self.data_dir.name, "http://127.0.0.1:9")))
         await self.client.start_server()
         response = await self.client.get(f"/studio/api/projects/{project['id']}")
         saved = await response.json()
@@ -102,7 +102,7 @@ class StudioApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
 
         await self.client.close()
-        self.client = TestClient(TestServer(create_app(self.data_dir.name)))
+        self.client = TestClient(TestServer(create_app(self.data_dir.name, "http://127.0.0.1:9")))
         await self.client.start_server()
         response = await self.client.get(asset["url"])
         self.assertEqual(response.status, 200)
@@ -1661,8 +1661,8 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
         from studio.runner import normalize_clip_prompt, select_best_checkpoint
 
         self.assertEqual(
-            normalize_clip_prompt("lazypos\nA humorous modern anime-style parody"),
-            "A humorous modern anime-style parody",
+            normalize_clip_prompt("lazypos\nKaela Kovalskia, the girl from 1st image, lies on a soft carpet"),
+            "Kaela Kovalskia, lies on a soft carpet",
         )
         self.assertEqual(normalize_clip_prompt("embedding:lazypos, anime girl"), "embedding:lazypos, anime girl")
 
@@ -1759,10 +1759,12 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
         sdxl_prompt = next(s["prompt"] for s in self.submitted if s["prompt_id"] == r_sdxl["id"])
         self.assertEqual(sdxl_prompt["4"]["inputs"]["width"], 1376)
         self.assertEqual(sdxl_prompt["4"]["inputs"]["height"], 768)
-        self.assertEqual(sdxl_prompt["5"]["inputs"]["sampler_name"], "dpmpp_2m")
-        self.assertEqual(sdxl_prompt["5"]["inputs"]["scheduler"], "karras")
-        self.assertEqual(sdxl_prompt["5"]["inputs"]["steps"], 25)
-        self.assertEqual(sdxl_prompt["5"]["inputs"]["cfg"], 6.5)
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["sampler_name"], "euler_ancestral")
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["scheduler"], "normal")
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["steps"], 28)
+        self.assertEqual(sdxl_prompt["5"]["inputs"]["cfg"], 6.0)
+        self.assertIn("best quality", sdxl_prompt["2"]["inputs"]["text"])
+        self.assertIn("worst quality", sdxl_prompt["3"]["inputs"]["text"])
 
         sd15_prompt = next(s["prompt"] for s in self.submitted if s["prompt_id"] == r_sd15["id"])
         self.assertEqual(sd15_prompt["5"]["inputs"]["sampler_name"], "dpmpp_2m")
@@ -1850,7 +1852,7 @@ class StudioParallelGpuAndApiRoutingTests(unittest.IsolatedAsyncioTestCase):
             "torchInstalled": True, "torchVersion": "2.7.0+cu126", "torchCudaAvailable": True,
             "torchCudaVersion": "12.6", "torchGpuName": "NVIDIA GeForce RTX 3060", "torchVramMB": 12288.0,
         }):
-            self.assertEqual(detect_comfy_worker_flags(), ["--disable-auto-launch", "--normalvram"])
+            self.assertEqual(detect_comfy_worker_flags(), ["--disable-auto-launch"])
 
         with patch("studio.__main__.probe_gpu_environment", return_value={
             "nvidiaSmiFound": True, "hardwareGpuName": "GTX 1650", "hardwareVramMB": 4096.0,
